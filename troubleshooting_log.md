@@ -19,3 +19,14 @@ Ubuntu VM was powered off.
 
 Resolution:
 Started Ubuntu and verified the SOC-LAB interface.
+
+# Problem 3
+
+Problem:
+Windows VM initially booted to `EFI Network` instead of the Windows installer.
+
+Cause:
+The VM was not successfully booting from the attached Windows ISO despite the ISO being configured in the virtual CD/DVD device.
+
+Resolution:
+Verified the Windows ISO was selected as the CD/DVD image, confirmed the device was connected at power-on, and manually booted the VM through UEFI firmware from the virtual CD/DVD device.
