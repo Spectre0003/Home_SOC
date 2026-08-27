@@ -465,6 +465,74 @@ Detailed troubleshooting notes are maintained in:
 
 ---
 
+## Current Progress
+
+### Lab Infrastructure
+
+The initial Home SOC lab environment has been successfully deployed using VMware Workstation.
+
+Current endpoints:
+
+| Machine | Role | SOC-LAB IP |
+|---|---|---|
+| Kali Linux | Analyst / Attack Simulation | 192.168.8.128 |
+| Ubuntu | Linux Endpoint / Server | 192.168.8.129 |
+| Windows 11 | Windows Endpoint | 192.168.8.130 |
+
+The SOC-LAB network uses the `192.168.8.0/24` subnet through VMware VMnet1.
+
+### Ubuntu Endpoint
+
+Ubuntu is configured as the primary Linux endpoint.
+
+Current configuration:
+
+- Hostname: `homesoc-ubuntu`
+- SOC-LAB interface: `ens34`
+- SOC-LAB IP: `192.168.8.129/24`
+- SSH server: OpenSSH
+- SSH status: Enabled and running
+- SSH port: 22
+
+Ubuntu logging has been verified.
+
+Important available logs include:
+
+- `/var/log/auth.log`
+- `/var/log/syslog`
+- `/var/log/kern.log`
+- `/var/log/dmesg`
+- `/var/log/apt/`
+- systemd journal
+
+The authentication log is successfully recording authentication and privilege-related activity, including SSH, sudo, PAM, and cron events.
+
+### Windows Endpoint
+
+Windows 11 has been successfully installed and configured as the Windows endpoint.
+
+Current configuration:
+
+- Hostname: `homesoc-windows`
+- SOC-LAB IP: `192.168.8.130`
+- SOC-LAB network interface: Ethernet1
+- SOC-LAB network profile: Private
+- SMB: TCP/445 accessible from Kali
+- Windows Security auditing verified
+
+Windows Security Event IDs currently observed include:
+
+- Event ID 4624 — Successful logon
+- Event ID 4625 — Failed logon
+
+SMB access from Kali has also been successfully tested using `smbclient`.
+
+### Current Stage
+
+The lab infrastructure and endpoint logging baseline are now operational.
+
+Next stage: centralize endpoint telemetry and begin collecting, analyzing, and correlating security events.
+
 # Documentation
 
 The project documentation is currently organized as:

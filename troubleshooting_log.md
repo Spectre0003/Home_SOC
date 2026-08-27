@@ -95,3 +95,58 @@ successfully displayed the contents of the Windows C:\ drive, including:
 
 Result:
 Kali can now successfully access the Windows C$ administrative share using the `socadmin` account over SMB3.
+
+# Problem 5
+
+## Problem
+
+Kali could not initially reach the Windows endpoint at `192.168.8.130`.
+
+Testing TCP port 445 from Kali resulted in:
+
+    Connection timed out
+
+## Investigation
+
+Windows was confirmed to have the correct SOC-LAB IP address:
+
+    192.168.8.130
+
+Windows could communicate with other systems on the SOC-LAB network.
+
+The Windows SOC-LAB network interface was initially configured with the `Public` network profile.
+
+The SMB firewall rule was also checked and found to be enabled:
+
+    FPS-SMB-In-TCP
+    Enabled: True
+    Profile: Private, Public
+    Direction: Inbound
+    Action: Allow
+
+Despite this, Kali's connection to TCP port 445 was initially unsuccessful.
+
+## Resolution
+
+The SOC-LAB network interface was changed from the `Public` network profile to the `Private` profile.
+
+After changing the profile, TCP port 445 was tested again from Kali:
+
+    nc -nv 192.168.8.130 445
+
+The connection was successfully established.
+
+SMB access was then verified using:
+
+    smbclient //192.168.8.130/C$ -U 'WORKGROUP\socadmin' -m SMB3
+
+The Windows C$ administrative share was successfully accessed.
+
+## Lesson
+
+Windows network profiles can affect firewall behavior. When troubleshooting connectivity to a Windows endpoint, verify:
+
+1. The interface IP configuration.
+2. The network profile.
+3. The applicable Windows Firewall rules.
+4. Whether the target service is actually listening on the expected port.

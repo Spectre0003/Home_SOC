@@ -72,6 +72,36 @@ VMnet1 is configured as a Host-only network.
 
 The SOC-LAB network does not use a default gateway on the endpoint interfaces.
 
+The Home SOC uses an isolated VMware network for communication between the
+analyst machine and monitored endpoints.
+
+### SOC-LAB Network
+
+- Network: `192.168.8.0/24`
+- VMware Network: `VMnet1`
+- Network purpose: Internal SOC communication and attack simulation
+
+| System | Role | IP Address |
+|---|---|---|
+| Kali Linux | SOC Analyst / Attack Simulation | `192.168.8.128` |
+| Ubuntu | Linux Endpoint | `192.168.8.129` |
+| Windows 11 | Windows Endpoint | `192.168.8.130` |
+
+### Ubuntu Network Configuration
+
+Ubuntu has two network interfaces:
+
+| Interface | Network | IP | Purpose |
+|---|---|---|---|
+| `ens33` | `192.168.67.0/24` | `192.168.67.129` | NAT / Internet |
+| `ens34` | `192.168.8.0/24` | `192.168.8.129` | SOC-LAB |
+
+The default route uses the NAT interface:
+
+```text
+default via 192.168.67.2 dev ens33
+```
+
 ---
 
 ## 4. Current IP Address Allocation
