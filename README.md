@@ -527,11 +527,20 @@ Windows Security Event IDs currently observed include:
 
 SMB access from Kali has also been successfully tested using `smbclient`.
 
-### Current Stage
+### Linux Log Analyzer
 
-The lab infrastructure and endpoint logging baseline are now operational.
+A Python-based log analyzer was created to process the timestamped authentication logs collected by `collect_linux_logs.sh`.
 
-Next stage: centralize endpoint telemetry and begin collecting, analyzing, and correlating security events.
+The analyzer currently identifies:
+
+- Failed login attempts
+- Successful SSH/login attempts
+- Sudo-related activity
+
+Example execution:
+
+```bash
+~/homesoc/scripts/analyze_linux_logs.py
 
 # Documentation
 
