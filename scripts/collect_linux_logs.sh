@@ -7,11 +7,11 @@ mkdir -p "$LOG_DIR"
 
 echo "[+] Collecting Linux authentication logs..."
 
-sudo cp /var/log/auth.log "$LOG_DIR/auth_$TIMESTAMP.log"
+cp /var/log/auth.log "$LOG_DIR/auth_$TIMESTAMP.log"
 
 echo "[+] Collecting system journal..."
 
-sudo journalctl --no-pager > "$LOG_DIR/journal_$TIMESTAMP.log"
+journalctl --no-pager > "$LOG_DIR/journal_$TIMESTAMP.log"
 
 echo "[+] Collection complete."
 echo "[+] Logs saved to: $LOG_DIR"
