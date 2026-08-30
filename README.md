@@ -541,6 +541,30 @@ Example execution:
 
 ```bash
 ~/homesoc/scripts/analyze_linux_logs.py
+```
+
+## End-to-End Linux SOC Test
+
+Test:
+Generated controlled SSH and sudo authentication activity from the Kali VM against the Ubuntu SOC server.
+
+Expected detections:
+- Multiple failed SSH login attempts
+- Successful SSH login
+- Sudo authentication failure
+- Sudo command execution
+
+Observed:
+- Failed login attempts detected
+- Successful SSH logins detected
+- Sudo commands detected
+- Sudo authentication failure detected
+- Multiple failed login alert triggered
+
+Result:
+PASS
+
+The complete pipeline successfully collected authentication logs from the Ubuntu server and analyzed them using the Python detection script.
 
 # Documentation
 
