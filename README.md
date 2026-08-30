@@ -1,647 +1,971 @@
-# Home SOC Lab
+# Home SOC Project — Complete Documentation
 
-A personal cybersecurity lab designed to simulate a small Security Operations Center (SOC) environment using multiple virtual machines.
+## 1. Project Overview
 
-The project is being built incrementally to understand how security monitoring, logging, network traffic, authentication events, and incident investigation work in a controlled environment.
+The Home SOC project is a small, locally hosted Security Operations Center environment designed to demonstrate the core workflow of a SOC:
+
+1. Collect security-relevant logs.
+2. Store the collected logs centrally.
+3. Analyze the logs for suspicious activity.
+4. Generate detections/alerts.
+5. Automate the collection and analysis process.
+6. Build toward a simple monitoring/dashboard layer.
+
+The project currently uses:
+
+- Windows as the primary host system.
+- An Ubuntu VM as the Home SOC server.
+- SSH for controlled access between systems.
+- Bash for Linux log collection and SOC orchestration.
+- Python for log analysis and detection logic.
+- systemd/journald and traditional Linux authentication logs as data sources.
+- cron for scheduled execution.
+
+The current project is functional at the log-collection, analysis, detection, alert-writing, and automated-run stages.
 
 ---
 
-## Objectives
-
-The main goals of this project are to:
-
-- Build a functional home SOC environment from scratch.
-- Understand how endpoints generate security telemetry.
-- Collect and analyze Windows and Linux logs.
-- Monitor network traffic between systems.
-- Generate controlled security events.
-- Investigate authentication and network activity.
-- Develop practical SOC analysis and incident-response skills.
-- Eventually automate portions of the monitoring and analysis process.
-
----
-
-## Lab Architecture
-
-The current environment consists of three virtual machines:
-
-| System | Role | IP Address |
-|---|---|---|
-| Kali Linux | Security testing / analyst workstation | `192.168.8.128` |
-| Ubuntu | SOC server / monitoring infrastructure | `192.168.8.129` |
-| Windows 11 | Monitored endpoint | `192.168.8.130` |
-
-The systems communicate through a dedicated VMware virtual network.
-
-### Network Layout
+# 2. Current Architecture
 
 ```text
-                    Home SOC Lab Network
-                         192.168.8.0/24
-
-       ┌────────────────────┐
-       │     Kali Linux     │
-       │  Analyst / Testing │
-       │   192.168.8.128    │
-       └─────────┬──────────┘
-                 │
-                 │
-       ┌─────────┴──────────┐
-       │    SOC Network     │
-       │   192.168.8.0/24  │
-       └─────────┬──────────┘
-                 │
-        ┌────────┴─────────┐
-        │                  │
-┌───────▼────────┐ ┌───────▼──────────┐
-│     Ubuntu     │ │    Windows 11    │
-│   SOC Server   │ │ Monitored Endpoint│
-│ 192.168.8.129  │ │  192.168.8.130   │
-└────────────────┘ └──────────────────┘
+                    Windows Host
+                         |
+                         | SSH
+                         v
+              +----------------------+
+              |     Ubuntu VM        |
+              |      Home SOC        |
+              +----------------------+
+                         |
+          +--------------+--------------+
+          |                             |
+          v                             v
+   /var/log/auth.log              systemd journal
+          |                             |
+          +--------------+--------------+
+                         |
+                         v
+              collect_linux_logs.sh
+                         |
+                         v
+                ~/homesoc/logs/
+                         |
+                         v
+                analyze_linux_logs.py
+                         |
+                         v
+                    Detections
+                         |
+                         v
+                    alerts.log
+                         |
+                         v
+                    run_soc.sh
 ```
-
-The Windows and Ubuntu systems also have separate network connectivity for Internet access:
-
-- Ubuntu:
-  - SOC interface: `192.168.8.129`
-  - Internet-facing interface: `192.168.67.129`
-
-- Windows:
-  - SOC interface: `192.168.8.130`
-  - Internet-facing interface: `192.168.67.130`
-
-This separation allows the SOC network to remain distinct from the normal Internet-facing network.
-
-For the detailed architecture and network configuration, see:
-
-- [`architecture.md`](architecture.md)
 
 ---
 
-## Current Environment
+# 3. Project Directory Structure
 
-### Kali Linux
-
-Kali Linux acts as the security testing and analyst machine.
-
-It is used to:
-
-- Test network connectivity.
-- Interact with the monitored endpoint.
-- Generate controlled authentication activity.
-- Test SMB connectivity.
-- Perform security testing against the lab systems.
-
-### Ubuntu
-
-Ubuntu acts as the SOC infrastructure/server machine.
-
-It is currently configured with:
-
-- Ubuntu Server
-- SSH
-- A dedicated SOC network interface
-- Connectivity to Kali
-- Connectivity to the Windows endpoint
-
-Ubuntu is currently operating as a CLI-based server rather than a graphical desktop environment.
-
-### Windows 11
-
-Windows 11 acts as the monitored endpoint.
-
-It is used to generate endpoint telemetry such as:
-
-- Successful logons
-- Failed logons
-- Network authentication
-- SMB activity
-- Windows Security Event Logs
-
-The Windows machine is configured with the local account:
+The current Home SOC directory is:
 
 ```text
-socadmin
+/home/socadmin/homesoc/
 ```
 
-The account is a member of the local `Administrators` group for lab purposes.
-
----
-
-# Completed Setup
-
-## 1. Virtual Machines
-
-The initial virtual lab environment has been created using VMware.
-
-Current systems:
-
-- Kali Linux
-- Ubuntu
-- Windows 11
-
----
-
-## 2. Ubuntu Configuration
-
-Ubuntu was installed as a server-oriented system without a graphical desktop environment.
-
-The SOC network interface was configured successfully:
+Current structure:
 
 ```text
-Interface: ens34
-IPv4:      192.168.8.129/24
+/home/socadmin/homesoc/
+├── config/
+├── logs/
+└── scripts/
 ```
 
-SSH was also configured and tested.
+The `scripts` directory contains the project automation and analysis scripts.
 
-From Kali, SSH connectivity to Ubuntu was successfully established:
+The `logs` directory contains collected authentication logs, journal exports, and the generated alert log.
+
+---
+
+# 4. Log Collection
+
+## 4.1 Linux Authentication Logs
+
+The project collects `/var/log/auth.log`.
+
+This log contains security-relevant authentication and privilege events such as:
+
+- SSH login failures
+- Successful SSH logins
+- sudo command execution
+- sudo authentication failures
+- PAM authentication events
+
+Because `/var/log/auth.log` requires elevated privileges to read on this system, the collection script uses `sudo`.
+
+---
+
+## 4.2 System Journal
+
+The project also collects the systemd journal using:
 
 ```bash
-ssh socadmin@192.168.8.129
+sudo journalctl --no-pager
 ```
 
-This confirmed that Kali can remotely access the Ubuntu SOC server.
+The output is redirected into a timestamped file.
+
+This provides a broader source of system activity beyond authentication events.
 
 ---
 
-## 3. Windows 11 Configuration
+# 5. Linux Log Collection Script
 
-Windows 11 was installed as the monitored endpoint.
-
-The machine was configured with two network interfaces.
-
-SOC interface:
+File:
 
 ```text
-IPv4 Address:    192.168.8.130
-Subnet Mask:     255.255.255.0
+/home/socadmin/homesoc/scripts/collect_linux_logs.sh
 ```
 
-Internet-facing interface:
+The script:
+
+1. Defines the Home SOC log directory.
+2. Generates a timestamp.
+3. Creates the log directory if required.
+4. Copies `/var/log/auth.log`.
+5. Exports the system journal.
+6. Saves both outputs using timestamped filenames.
+
+The collection process produces files similar to:
 
 ```text
-IPv4 Address:    192.168.67.130
-Subnet Mask:     255.255.255.0
-Default Gateway: 192.168.67.2
+auth_2026-08-30_12-36-48.log
+journal_2026-08-30_12-36-48.log
 ```
 
-The SOC interface was configured as a Private network.
+The timestamp allows multiple collection runs to coexist instead of overwriting previous evidence.
 
 ---
 
-## 4. Network Connectivity
+# 6. Permissions and Ownership
 
-Connectivity between the systems has been tested successfully.
+Collected authentication logs may initially be owned by `root` because `/var/log/auth.log` is a privileged system log.
 
-### Kali → Ubuntu
-
-```text
-192.168.8.128 → 192.168.8.129
-```
-
-Successful.
-
-### Windows → Ubuntu
+Example:
 
 ```text
-192.168.8.130 → 192.168.8.129
+-rw-r----- 1 root socadmin ... auth_2026-08-30_12-36-48.log
 ```
 
-Successful.
+This caused the Python analyzer to initially receive:
 
-### Windows → Internet
-
-Connectivity was verified using:
-
-```powershell
-ping 8.8.8.8
+```text
+PermissionError: [Errno 13] Permission denied
 ```
 
-Successful.
+The problem was resolved by adjusting the collected file permissions so that the `socadmin` account could read the files.
 
-### Kali → Windows
-
-Connectivity was initially affected by Windows being powered off and Windows Firewall configuration.
-
-After troubleshooting, SMB connectivity was successfully established.
+The analyzer can now successfully process multiple authentication log files.
 
 ---
 
-# SMB Testing
+# 7. Linux Log Analyzer
 
-SMB (Server Message Block) is being used as one of the first practical protocols for generating network authentication events.
+File:
 
-Windows was configured to allow SMB traffic through the appropriate Windows Firewall rule.
-
-The SMB service was verified using:
-
-```powershell
-Get-Service LanmanServer
+```text
+/home/socadmin/homesoc/scripts/analyze_linux_logs.py
 ```
 
-The service was running.
+The analyzer is written in Python 3.
 
-From Kali, TCP port 445 was tested:
+It scans:
+
+```text
+/home/socadmin/homesoc/logs/auth_*.log
+```
+
+This means every collected authentication log matching the timestamped `auth_*.log` naming convention is analyzed.
+
+---
+
+# 8. Detection Categories
+
+The analyzer currently detects four main categories.
+
+## 8.1 Failed Login Attempts
+
+The analyzer searches for:
+
+```text
+Failed password
+```
+
+These events are stored in:
+
+```python
+failed_logins
+```
+
+Example event:
+
+```text
+sshd: Failed password for socadmin from 192.168.8.128 ...
+```
+
+The analyzer reports the total number of failed login events.
+
+---
+
+## 8.2 Successful Login Attempts
+
+The analyzer searches for:
+
+```text
+Accepted password
+```
+
+and:
+
+```text
+Accepted publickey
+```
+
+These events are stored in:
+
+```python
+successful_logins
+```
+
+Example:
+
+```text
+sshd: Accepted password for socadmin from 192.168.8.128 ...
+```
+
+---
+
+## 8.3 Sudo Command Execution
+
+The analyzer searches for:
+
+```text
+sudo:
+```
+
+and then checks for:
+
+```text
+COMMAND=
+```
+
+Matching events are stored in:
+
+```python
+sudo_commands
+```
+
+This provides visibility into commands executed with elevated privileges.
+
+Example:
+
+```text
+sudo: socadmin : TTY=pts/0 ; PWD=/home/socadmin ; USER=root ; COMMAND=/usr/bin/...
+```
+
+---
+
+## 8.4 Sudo Authentication Failures
+
+The analyzer searches for:
+
+```text
+sudo:
+```
+
+combined with:
+
+```text
+authentication failure
+```
+
+These events are stored in:
+
+```python
+sudo_failures
+```
+
+Example:
+
+```text
+sudo: pam_unix(sudo:auth): authentication failure; ...
+```
+
+---
+
+# 9. Current Detection Rules
+
+The analyzer currently has four basic detection rules.
+
+## Rule 1 — Multiple Failed Logins
+
+If:
+
+```python
+len(failed_logins) >= 5
+```
+
+the analyzer generates:
+
+```text
+[ALERT] Multiple failed login attempts detected.
+```
+
+This represents a basic brute-force / repeated-authentication-failure detection.
+
+---
+
+## Rule 2 — Sudo Authentication Failure
+
+If at least one sudo authentication failure is detected:
+
+```python
+len(sudo_failures) > 0
+```
+
+the analyzer generates:
+
+```text
+[ALERT] Sudo authentication failure detected.
+```
+
+---
+
+## Rule 3 — Successful Login
+
+If successful login activity exists:
+
+```python
+len(successful_logins) > 0
+```
+
+the analyzer generates:
+
+```text
+[INFO] Successful SSH/login activity detected.
+```
+
+---
+
+## Rule 4 — Sudo Command Execution
+
+If sudo commands are present:
+
+```python
+len(sudo_commands) > 0
+```
+
+the analyzer generates:
+
+```text
+[INFO] Sudo command execution detected.
+```
+
+---
+
+# 10. Current Analyzer Output
+
+The analyzer produces four result sections:
+
+```text
+========== RESULTS ==========
+```
+
+followed by:
+
+```text
+[!] Failed login attempts
+[+] Successful login attempts
+[*] Sudo commands executed
+[!] Sudo authentication failures
+```
+
+It then produces:
+
+```text
+========== DETECTIONS ==========
+```
+
+with the applicable detection messages.
+
+Finally:
+
+```text
+[+] Analysis complete.
+```
+
+---
+
+# 11. Alert Logging
+
+The analyzer has been extended so that generated alerts are also written to:
+
+```text
+/home/socadmin/homesoc/logs/alerts.log
+```
+
+Example:
+
+```text
+2026-08-30 12:34:17 [ALERT] Multiple failed login attempts detected.
+2026-08-30 12:34:17 [ALERT] Sudo authentication failure detected.
+```
+
+This creates a persistent alert history rather than displaying detections only on the terminal.
+
+The file can be viewed with:
 
 ```bash
-nc -nvz 192.168.8.130 445
+cat ~/homesoc/logs/alerts.log
 ```
-
-Result:
-
-```text
-192.168.8.130 445 (microsoft-ds) open
-```
-
-This confirmed that SMB was reachable from Kali.
 
 ---
 
-## SMB Authentication
+# 12. SOC Runner
 
-Kali successfully authenticated to the Windows endpoint using the `socadmin` account:
+The project has a master execution script:
+
+```text
+/home/socadmin/homesoc/scripts/run_soc.sh
+```
+
+Its purpose is to execute the SOC workflow as a single operation.
+
+Current workflow:
+
+```text
+START
+  |
+  v
+Collect Linux logs
+  |
+  v
+Save timestamped logs
+  |
+  v
+Run Python log analyzer
+  |
+  v
+Generate detections
+  |
+  v
+Write alerts.log
+  |
+  v
+SOC run complete
+```
+
+The script can be executed with:
 
 ```bash
-smbclient //192.168.8.130/C$ -U 'WORKGROUP\socadmin' -m SMB3
+~/homesoc/scripts/run_soc.sh
 ```
 
-The authentication allowed access to the Windows administrative share.
-
-The available shares included:
+A successful run displays:
 
 ```text
-ADMIN$
-C$
-IPC$
+==============================
+       HOME SOC RUN
+==============================
+
+[+] Starting log collection ...
+...
+[+] Starting log analysis ...
+...
+[+] Alerts written to: /home/socadmin/homesoc/logs/alerts.log
+...
+[+] SOC run complete.
 ```
-
-The SMB session was subsequently used to list the contents of the Windows `C$` administrative share.
-
-This confirmed that:
-
-```text
-Kali
-  │
-  │ SMB
-  │ TCP/445
-  ▼
-Windows 11
-```
-
-is functioning correctly.
 
 ---
 
-# Windows Security Event Monitoring
+# 13. Scheduled Execution
 
-The first Windows security events have now been generated and investigated.
+The system's cron service is enabled and running.
 
-Windows Event Viewer was used to inspect the Security log.
+Verified using:
 
-## Event ID 4624 — Successful Logon
-
-A successful network authentication generated:
-
-```text
-Event ID:   4624
-Logon Type: 3
+```bash
+systemctl status cron --no-pager
 ```
 
-Logon Type `3` represents a network logon.
-
-The event identified the source system as Kali:
+The output confirmed:
 
 ```text
-Source IP: 192.168.8.128
+Loaded: loaded (...; enabled)
+Active: active (running)
 ```
 
-and the target Windows system as:
+Cron activity was also visible in the system journal.
 
-```text
-192.168.8.130
-```
+Therefore, scheduled task execution is functioning at the operating-system level.
 
-The account involved was:
-
-```text
-socadmin
-```
-
-This demonstrates that SMB authentication activity can be observed through Windows Security Event Logs.
+The SOC runner can be used as the command executed by a cron job.
 
 ---
 
-## Event ID 4625 — Failed Logon
+# 14. Testing Performed
 
-A deliberately unsuccessful authentication attempt generated:
+The system has been tested by generating real authentication activity.
 
-```text
-Event ID:   4625
-Logon Type: 3
-```
+Observed events include:
 
-The event contained:
+### Failed SSH authentication
 
 ```text
-Account Name: socadmin
-Account Domain: WORKGROUP
-Source Network Address: 192.168.8.128
+Failed password for socadmin from 192.168.8.128
 ```
 
-The failure reason was:
+### Successful SSH authentication
 
 ```text
-Unknown user name or bad password.
+Accepted password for socadmin from 192.168.8.128
 ```
 
-This demonstrates the difference between:
+### Sudo authentication failure
 
 ```text
-4624 → Successful authentication
-4625 → Failed authentication
+sudo: pam_unix(sudo:auth): authentication failure
 ```
 
-while both can have:
+### Sudo command execution
 
 ```text
-Logon Type 3 → Network authentication
+sudo: socadmin : TTY=pts/0 ; PWD=/home/socadmin ; USER=root ; COMMAND=...
 ```
 
-These events provide the first examples of security telemetry that the SOC will eventually collect and analyze automatically.
+The Python analyzer correctly identified these events.
 
 ---
 
-# Troubleshooting
+# 15. Current Test Results
 
-Several issues were encountered while building the environment.
-
-### Ubuntu installation
-
-The Ubuntu installer initially failed to unmount `/cdrom`.
-
-**Cause:**
-
-The installation ISO was still attached to VMware's virtual CD/DVD device.
-
-**Resolution:**
-
-The ISO was disconnected and the VM continued booting from the virtual disk.
-
----
-
-### Kali → Windows connectivity
-
-Kali initially reported:
+During testing, the analyzer successfully produced results such as:
 
 ```text
-No route to host
+Failed login attempts: 8
+Successful login attempts: 5
+Sudo commands executed: 15
+Sudo authentication failures: 1
 ```
 
-when attempting to reach Windows.
-
-**Cause:**
-
-The Windows VM was not powered on.
-
-**Resolution:**
-
-Windows was started and connectivity was retested.
-
----
-
-### Windows SMB connectivity
-
-TCP port 445 was initially unreachable from Kali.
-
-Windows was checked using:
-
-```powershell
-Get-Service LanmanServer
-```
-
-The SMB server service was running.
-
-The Windows network profile and firewall configuration were then investigated.
-
-After correcting the firewall configuration, TCP/445 became reachable:
+and generated:
 
 ```text
-192.168.8.130 445 (microsoft-ds) open
+[ALERT] Multiple failed login attempts detected.
+[ALERT] Sudo authentication failure detected.
+[INFO] Successful SSH/login activity detected.
+[INFO] Sudo command execution detected.
 ```
 
-SMB authentication was subsequently successful.
+Later automated runs successfully collected additional logs and analyzed the growing set of timestamped authentication files.
 
-Detailed troubleshooting notes are maintained in:
-
-- [`troubleshooting_log.md`](troubleshooting_log.md)
+The exact counts will naturally increase as more tests and SOC runs are performed.
 
 ---
 
-# Current Project Status
+# 16. Important Observation About Repeated Events
 
-### Completed
+The analyzer currently scans every historical file matching:
 
-- [x] Create VMware lab environment
-- [x] Install Kali Linux
-- [x] Install Ubuntu
-- [x] Install Windows 11
-- [x] Configure SOC network
-- [x] Configure Ubuntu SSH
-- [x] Establish Kali → Ubuntu connectivity
-- [x] Establish Windows → Ubuntu connectivity
-- [x] Verify Windows Internet connectivity
-- [x] Configure Windows local `socadmin` account
-- [x] Configure Windows network profile
-- [x] Configure Windows SMB service
-- [x] Configure SMB firewall access
-- [x] Verify TCP/445 connectivity
-- [x] Successfully authenticate to Windows over SMB
-- [x] Generate Windows Event ID 4624
-- [x] Generate Windows Event ID 4625
-- [x] Investigate Windows Logon Type 3
-- [x] Identify Kali as the source of network authentication events
+```text
+auth_*.log
+```
 
+Therefore, the same original authentication event can appear more than once if multiple collection files contain overlapping data.
+
+This can cause the reported counts to increase even when no new unique event occurred.
+
+For example:
+
+```text
+auth_08-53-50.log
+auth_09-09-08.log
+auth_09-14-19.log
+auth_12-22-19.log
+```
+
+may contain overlapping portions of `/var/log/auth.log`.
+
+This is acceptable for the current prototype because the primary goal at this stage is demonstrating collection and detection.
+
+A later improvement should introduce event deduplication or incremental log processing.
 
 ---
 
-## Current Progress
+# 17. Current Project Status
 
-### Lab Infrastructure
+## Completed
 
-The initial Home SOC lab environment has been successfully deployed using VMware Workstation.
+- [x] Ubuntu Home SOC VM created
+- [x] Home SOC directory structure created
+- [x] Linux authentication log collection
+- [x] systemd journal collection
+- [x] Timestamped log storage
+- [x] Python log analyzer
+- [x] SSH failed-login detection
+- [x] SSH successful-login detection
+- [x] sudo command detection
+- [x] sudo authentication-failure detection
+- [x] Basic threshold-based alerting
+- [x] Persistent `alerts.log`
+- [x] Master `run_soc.sh` workflow
+- [x] Cron service verified
+- [x] Automated collection/analysis workflow tested
+- [x] Real log events generated and detected
+- [x] Permission issues during log analysis resolved
 
-Current endpoints:
+---
 
-| Machine | Role | SOC-LAB IP |
-|---|---|---|
-| Kali Linux | Analyst / Attack Simulation | 192.168.8.128 |
-| Ubuntu | Linux Endpoint / Server | 192.168.8.129 |
-| Windows 11 | Windows Endpoint | 192.168.8.130 |
+# 18. Current Limitations
 
-The SOC-LAB network uses the `192.168.8.0/24` subnet through VMware VMnet1.
+The current Home SOC is intentionally a lightweight prototype.
 
-### Ubuntu Endpoint
+Known limitations:
 
-Ubuntu is configured as the primary Linux endpoint.
+1. The analyzer processes historical authentication files every time it runs.
+2. Duplicate events can therefore be counted multiple times.
+3. Detection rules are currently simple threshold/string-matching rules.
+4. Alerts are stored in a flat text file.
+5. There is no graphical dashboard yet.
+6. There is no centralized Windows log ingestion yet.
+7. There is no network telemetry ingestion yet.
+8. There is no alert severity classification beyond ALERT/INFO.
+9. There is no correlation between multiple event types.
+10. There is no automated response/remediation mechanism.
 
-Current configuration:
+These are future development stages rather than failures of the current implementation.
 
-- Hostname: `homesoc-ubuntu`
-- SOC-LAB interface: `ens34`
-- SOC-LAB IP: `192.168.8.129/24`
-- SSH server: OpenSSH
-- SSH status: Enabled and running
-- SSH port: 22
+---
 
-Ubuntu logging has been verified.
+# 19. Recommended Next Development Stages
 
-Important available logs include:
+The remaining work should focus on turning the working prototype into a more complete Home SOC.
 
+## Stage 1 — Improve Detection Quality
+
+Add better detection logic, including:
+
+- Failed-login threshold per source IP
+- Failed-login threshold within a time window
+- Successful login following multiple failures
+- Unusual login sources
+- Suspicious sudo activity
+- Repeated sudo authentication failures
+- SSH activity correlation
+
+The goal is to move from simple string matching toward basic SOC-style correlation.
+
+---
+
+## Stage 2 — Improve Alert Structure
+
+Instead of writing only plain alert messages, introduce structured fields such as:
+
+```text
+Timestamp
+Severity
+Detection
+Source
+User
+Event type
+Description
+```
+
+A structured format such as CSV or JSON can eventually make alerts easier to consume by a dashboard.
+
+---
+
+## Stage 3 — Windows Log Collection
+
+Extend the SOC to collect security events from the Windows host.
+
+Important Windows Event IDs to investigate include:
+
+```text
+4624 — Successful logon
+4625 — Failed logon
+4672 — Special privileges assigned
+4688 — Process creation
+4720 — User account created
+4732 — Member added to a security-enabled local group
+7045 — Service installed
+```
+
+The exact events collected should be selected according to the telemetry available on the Windows system.
+
+---
+
+## Stage 4 — Network Visibility
+
+Add network telemetry.
+
+Possible sources include:
+
+- Wireshark
+- tcpdump
+- Zeek
+- connection logs
+- firewall logs
+
+The goal is to allow the SOC to correlate host activity with network activity.
+
+---
+
+## Stage 5 — Detection Correlation
+
+Combine different events into a single incident.
+
+Example:
+
+```text
+5 failed SSH logins
+        +
+successful SSH login
+        +
+sudo command execution
+        =
+Higher-severity suspicious login incident
+```
+
+This is a major step toward realistic SOC analysis.
+
+---
+
+## Stage 6 — Dashboard
+
+Build a simple local dashboard showing:
+
+```text
++--------------------------------------+
+|             HOME SOC                 |
++--------------------------------------+
+| Alerts        | Failed Logins        |
+| 12            | 24                   |
++--------------------------------------+
+| Successful Logins | Sudo Events      |
+| 7                 | 31               |
++--------------------------------------+
+| Recent Alerts                         |
+| [ALERT] Multiple SSH failures         |
+| [ALERT] Sudo authentication failure   |
++--------------------------------------+
+```
+
+The dashboard does not need to be highly polished. Its purpose is to demonstrate that the SOC pipeline can feed a monitoring interface.
+
+---
+
+# 20. Target Final Architecture
+
+The intended final architecture is:
+
+```text
+                     +----------------+
+                     | Windows Host   |
+                     | Security Logs  |
+                     +-------+--------+
+                             |
+                             |
+                             v
+                     +----------------+
+                     | Ubuntu Home SOC|
+                     +-------+--------+
+                             |
+              +--------------+--------------+
+              |              |              |
+              v              v              v
+          Linux Logs    Windows Logs    Network Logs
+              |              |              |
+              +--------------+--------------+
+                             |
+                             v
+                     +----------------+
+                     | Log Processing |
+                     +-------+--------+
+                             |
+                             v
+                     +----------------+
+                     | Detection      |
+                     | Engine         |
+                     +-------+--------+
+                             |
+                             v
+                     +----------------+
+                     | Alert Store    |
+                     +-------+--------+
+                             |
+                             v
+                     +----------------+
+                     | Dashboard      |
+                     +----------------+
+```
+
+---
+
+# 21. Useful Commands
+
+## Run Linux log collection
+
+```bash
+~/homesoc/scripts/collect_linux_logs.sh
+```
+
+## Run the analyzer
+
+```bash
+python3 ~/homesoc/scripts/analyze_linux_logs.py
+```
+
+## Run the entire SOC
+
+```bash
+~/homesoc/scripts/run_soc.sh
+```
+
+## List collected logs
+
+```bash
+ls -lh ~/homesoc/logs
+```
+
+## View recent alerts
+
+```bash
+tail -n 20 ~/homesoc/logs/alerts.log
+```
+
+## View authentication log activity
+
+```bash
+sudo tail -n 20 /var/log/auth.log
+```
+
+## View recent journal entries
+
+```bash
+sudo journalctl --no-pager -n 20
+```
+
+## Check cron
+
+```bash
+systemctl status cron --no-pager
+```
+
+## Check SOC scripts
+
+```bash
+ls -lh ~/homesoc/scripts
+```
+
+---
+
+# 22. Project Learning Outcomes
+
+The project currently demonstrates practical understanding of:
+
+- Linux authentication logging
 - `/var/log/auth.log`
-- `/var/log/syslog`
-- `/var/log/kern.log`
-- `/var/log/dmesg`
-- `/var/log/apt/`
 - systemd journal
+- SSH authentication telemetry
+- sudo/PAM events
+- Bash scripting
+- Python log parsing
+- regular expression concepts
+- file permissions
+- root vs normal-user access
+- timestamped evidence collection
+- basic detection engineering
+- alert generation
+- cron scheduling
+- SOC workflow automation
+- security event triage
 
-The authentication log is successfully recording authentication and privilege-related activity, including SSH, sudo, PAM, and cron events.
-
-### Windows Endpoint
-
-Windows 11 has been successfully installed and configured as the Windows endpoint.
-
-Current configuration:
-
-- Hostname: `homesoc-windows`
-- SOC-LAB IP: `192.168.8.130`
-- SOC-LAB network interface: Ethernet1
-- SOC-LAB network profile: Private
-- SMB: TCP/445 accessible from Kali
-- Windows Security auditing verified
-
-Windows Security Event IDs currently observed include:
-
-- Event ID 4624 — Successful logon
-- Event ID 4625 — Failed logon
-
-SMB access from Kali has also been successfully tested using `smbclient`.
-
-### Linux Log Analyzer
-
-A Python-based log analyzer was created to process the timestamped authentication logs collected by `collect_linux_logs.sh`.
-
-The analyzer currently identifies:
-
-- Failed login attempts
-- Successful SSH/login attempts
-- Sudo-related activity
-
-Example execution:
-
-```bash
-~/homesoc/scripts/analyze_linux_logs.py
-```
-
-## End-to-End Linux SOC Test
-
-Test:
-Generated controlled SSH and sudo authentication activity from the Kali VM against the Ubuntu SOC server.
-
-Expected detections:
-- Multiple failed SSH login attempts
-- Successful SSH login
-- Sudo authentication failure
-- Sudo command execution
-
-Observed:
-- Failed login attempts detected
-- Successful SSH logins detected
-- Sudo commands detected
-- Sudo authentication failure detected
-- Multiple failed login alert triggered
-
-Result:
-PASS
-
-The complete pipeline successfully collected authentication logs from the Ubuntu server and analyzed them using the Python detection script.
-
-# Documentation
-
-The project documentation is currently organized as:
+The most important concept demonstrated by the project is the complete pipeline:
 
 ```text
-HomeSOC/
-│
-├── README.md
-├── architecture.md
-└── troubleshooting_log.md
+Telemetry
+    ↓
+Collection
+    ↓
+Storage
+    ↓
+Parsing
+    ↓
+Detection
+    ↓
+Alert
+    ↓
+Monitoring
 ```
-
-### README.md
-
-Contains:
-
-- Project overview
-- Objectives
-- Current architecture
-- Lab status
-- Major milestones
-- Security observations
-
-### architecture.md
-
-Contains the detailed:
-
-- VM architecture
-- Network interfaces
-- IP addressing
-- Network design
-- System roles
-
-### troubleshooting_log.md
-
-Contains problems encountered during construction of the lab and their resolutions.
 
 ---
 
-# Future Development
+# 23. Current Milestone
 
-The lab will gradually evolve from a collection of virtual machines into a functional SOC environment.
+The Home SOC has moved beyond being a collection of disconnected scripts.
 
-The planned progression is:
+It now has a working end-to-end Linux SOC pipeline:
 
 ```text
-Virtual Lab
-     │
-     ▼
-Network Connectivity
-     │
-     ▼
-Endpoint Configuration
-     │
-     ▼
-Log Generation
-     │
-     ▼
-Centralized Log Collection
-     │
-     ▼
-Log Analysis
-     │
-     ▼
-Detection Rules
-     │
-     ▼
-Alerting
-     │
-     ▼
-Incident Investigation
-     │
-     ▼
-Automation
+Linux system activity
+        ↓
+collect_linux_logs.sh
+        ↓
+timestamped evidence
+        ↓
+analyze_linux_logs.py
+        ↓
+detection rules
+        ↓
+alerts.log
+        ↓
+run_soc.sh
+        ↓
+automated SOC execution
 ```
 
-The long-term objective is to create a realistic but controlled environment in which security events can be intentionally generated, detected, investigated, and documented.
+The next major milestone is therefore not basic log collection.
+
+The next phase is **improving the detection engine and expanding telemetry**, followed by **visualizing the resulting alerts**.
 
 ---
+
+# 24. Project Status Summary
+
+```text
+HOME SOC STATUS
+===============
+
+Environment             COMPLETE
+Directory structure     COMPLETE
+Linux log collection    COMPLETE
+Journal collection      COMPLETE
+Python analyzer         COMPLETE
+Basic detections        COMPLETE
+Alert logging           COMPLETE
+SOC runner              COMPLETE
+Cron integration        FUNCTIONAL
+Testing                 COMPLETE
+
+Detection improvement   NEXT
+Windows telemetry       NEXT
+Network telemetry       NEXT
+Correlation             NEXT
+Dashboard               FINAL MAJOR STAGE
+Documentation           CURRENTLY UPDATED
+```
+
+The Linux side of the Home SOC is now operational.
