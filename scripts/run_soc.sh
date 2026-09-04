@@ -25,6 +25,10 @@ echo "[+] Generating alert summary..."
 python3 /home/socadmin/homesoc/scripts/alert_summary.py
 
 echo
+echo "[+] Generating incidents..."
+python3 /home/socadmin/homesoc/scripts/generate_incidents.py
+
+echo
 echo "================================"
 echo "[+] HOME SOC RUN COMPLETE"
 echo "================================"
