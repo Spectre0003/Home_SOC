@@ -1,10 +1,10 @@
 # Home SOC
 
-A small, custom Security Operations Center (SOC) lab built to learn and demonstrate practical security monitoring, log analysis, detection, event correlation, and alerting.
+A small, custom Security Operations Center (SOC) lab built to learn and demonstrate practical security monitoring, log analysis, detection, event correlation, alerting, and incident reporting.
 
 ## Current Progress
 
-The project has completed its core SOC detection pipeline:
+The project has completed its core SOC detection and reporting pipeline:
 
 - Linux log collection
 - Linux authentication and sudo analysis
@@ -15,8 +15,10 @@ The project has completed its core SOC detection pipeline:
 - Persistent correlation state / alert deduplication
 - Central alert logging
 - Alert summary reporting
+- Structured incident/case reporting
+- Automated response (log-only simulated actions)
 
-**Current stage:** moving from alert reporting into incident reporting, automated response, visualization, testing, and final documentation.
+**Current stage:** moving from automated response into dashboard/visualization, attack scenario testing, and final documentation.
 
 ## Architecture
 
@@ -54,6 +56,16 @@ Linux Analyzer   Windows Analyzer
          Alert Summary
                |
                v
+       Incident Generator
+               |
+          incidents.log
+               |
+               v
+       Automated Response
+               |
+          actions.log
+               |
+               v
             Analyst
 ```
 
@@ -68,6 +80,8 @@ homesoc/
 |   +-- analyze_windows_logs.py
 |   +-- correlate_events.py
 |   +-- alert_summary.py
+|   +-- generate_incidents.py
+|   +-- automated_response.py
 |   +-- run_soc.sh
 |
 +-- logs/
@@ -76,6 +90,10 @@ homesoc/
     +-- windows_*.log
     +-- alerts.log
     +-- correlation_state.txt
+    +-- incidents.log
+    +-- incident_state.txt
+    +-- actions.log
+    +-- response_state.txt
 ```
 
 ## Components
@@ -132,8 +150,39 @@ Reads `alerts.log` and provides:
 - Recent alerts
 - High-level threat assessment
 
+### `generate_incidents.py`
+Reads `alerts.log` and converts new alerts into structured incident records written to `incidents.log` (one JSON object per line). Each incident includes:
+
+- Incident ID
+- Timestamp
+- Severity
+- Platform (Linux / Windows / Correlated)
+- Source IP
+- Target account
+- Failed-attempt count
+- Successful-auth flag
+- Detection reason
+- The originating alert text
+- Status (defaults to `open`)
+
+Previously processed alerts are tracked via `incident_state.txt`, so re-running the pipeline does not generate duplicate incidents for alerts already reported.
+
+### `automated_response.py`
+Reads `incidents.log` and generates a **log-only, simulated** response action for each new `CRITICAL` incident that has a known source IP. No firewall rules, `hosts.deny` entries, or other system-level changes are made — this stage only demonstrates the detect-to-response mechanism. Each action record written to `actions.log` includes:
+
+- Action ID
+- Linked incident ID
+- Timestamp
+- Action type (currently `block_ip`)
+- Target (source IP)
+- Reason (carried over from the incident's detection reason)
+- Status (`simulated`)
+- A note confirming no real change was made
+
+Previously responded-to incidents are tracked via `response_state.txt`, preventing duplicate action records on repeated runs. The severity threshold for triggering a response is a single constant at the top of the script and can be widened (e.g. to include `HIGH`) later.
+
 ### `run_soc.sh`
-Acts as the main SOC orchestrator and runs the collection, analysis, correlation, and reporting stages sequentially.
+Acts as the main SOC orchestrator and runs the collection, analysis, correlation, reporting, and incident generation stages sequentially.
 
 ## Current Detection Coverage
 
@@ -167,6 +216,26 @@ Successful authentication
 Correlated attack alert
 ```
 
+### Incident Reporting
+
+```text
+alerts.log
+        ↓
+Structured incident record
+        ↓
+incidents.log (deduplicated)
+```
+
+### Automated Response
+
+```text
+incidents.log (CRITICAL + known source IP)
+        ↓
+Simulated response action
+        ↓
+actions.log (deduplicated, log-only)
+```
+
 ## Current Status
 
 | Component | Status |
@@ -180,9 +249,9 @@ Correlated attack alert
 | Event correlation | Complete |
 | Alert state/deduplication | Complete |
 | Alert reporting | Complete |
-| Incident reporting | Next |
-| Automated response | Planned |
-| Dashboard | Planned |
+| Incident reporting | Complete |
+| Automated response | Complete |
+| Dashboard | Next |
 | Attack scenario testing | Planned |
 | Final documentation | Planned |
 
@@ -206,6 +275,10 @@ python3 ~/homesoc/scripts/analyze_windows_logs.py
 python3 ~/homesoc/scripts/correlate_events.py
 
 python3 ~/homesoc/scripts/alert_summary.py
+
+python3 ~/homesoc/scripts/generate_incidents.py
+
+python3 ~/homesoc/scripts/automated_response.py
 ```
 
 ## Goal
