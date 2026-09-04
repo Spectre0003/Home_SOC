@@ -2,9 +2,9 @@
 
 ## 1. Current Status
 
-The Home SOC has completed its core collection, analysis, detection, correlation, alerting, incident reporting, and automated response pipeline.
+The Home SOC has completed its core collection, analysis, detection, correlation, alerting, incident reporting, automated response, and dashboard pipeline.
 
-**Current phase:** Automated Response → Visualization → Testing → Final Documentation.
+**Current phase:** Attack Scenario Testing → Final Documentation.
 
 ## 2. Architecture
 
@@ -60,6 +60,12 @@ The Home SOC has completed its core collection, analysis, detection, correlation
        actions.log   response_state.txt
                      |
                      v
+              Dashboard Generator
+                     |
+                     v
+               dashboard.html
+                     |
+                     v
                   Analyst
 ```
 
@@ -76,7 +82,10 @@ The Home SOC has completed its core collection, analysis, detection, correlation
 |   +-- alert_summary.py
 |   +-- generate_incidents.py
 |   +-- automated_response.py
+|   +-- generate_dashboard.py
 |   +-- run_soc.sh
+|
++-- dashboard.html
 |
 +-- logs/
     +-- auth_*.log
@@ -119,6 +128,11 @@ The Home SOC has completed its core collection, analysis, detection, correlation
 - Each action record links back to its source `incident_id`, carries the original detection reason, and is explicitly marked `status: "simulated"` with a note confirming no real change occurred.
 - Previously responded-to incidents are tracked in `response_state.txt`, preventing duplicate action records on repeated runs.
 
+### Dashboard
+- `generate_dashboard.py` reads `alerts.log`, `incidents.log`, and `actions.log` and writes a single self-contained `dashboard.html` — no external dependencies.
+- Shows summary counts, top source IPs, and the most recent incidents and response actions.
+- Regenerated fresh on every run; there is no state file for this stage since it reflects current totals rather than tracking new vs. previously-seen data.
+
 ### Orchestration
 - `run_soc.sh` executes the SOC pipeline in sequence, including incident generation as the final stage.
 
@@ -150,6 +164,10 @@ The Home SOC has completed its core collection, analysis, detection, correlation
 - Deduplicated against previously responded-to incidents
 - No system-level or firewall changes are made
 
+### Dashboard
+- Static HTML summary of alerts, incidents, and response actions
+- Regenerated on each run, no external dependencies
+
 ## 6. Current Project Progress
 
 | Phase | Status |
@@ -166,20 +184,20 @@ The Home SOC has completed its core collection, analysis, detection, correlation
 | Alert reporting | Complete |
 | Incident/case reporting | Complete |
 | Automated response | Complete |
-| Dashboard/visualization | Next |
-| Attack scenario testing | Planned |
+| Dashboard/visualization | Complete |
+| Attack scenario testing | Next |
 | Final documentation | Planned |
 
 ## 7. Next Architecture Additions
 
-The next components will build on the existing pipeline rather than replace it:
+The next component will build on the existing pipeline rather than replace it:
 
 ```text
-actions.log
+Home SOC pipeline (end to end)
     |
     v
-Dashboard / Visualization
+Attack Scenario Testing
     |
     v
-Testing and Validation
+Final Documentation
 ```

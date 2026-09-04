@@ -17,8 +17,9 @@ The project has completed its core SOC detection and reporting pipeline:
 - Alert summary reporting
 - Structured incident/case reporting
 - Automated response (log-only simulated actions)
+- Dashboard/visualization
 
-**Current stage:** moving from automated response into dashboard/visualization, attack scenario testing, and final documentation.
+**Current stage:** moving from dashboard/visualization into attack scenario testing and final documentation.
 
 ## Architecture
 
@@ -66,6 +67,11 @@ Linux Analyzer   Windows Analyzer
           actions.log
                |
                v
+      Dashboard Generator
+               |
+          dashboard.html
+               |
+               v
             Analyst
 ```
 
@@ -82,7 +88,10 @@ homesoc/
 |   +-- alert_summary.py
 |   +-- generate_incidents.py
 |   +-- automated_response.py
+|   +-- generate_dashboard.py
 |   +-- run_soc.sh
+|
++-- dashboard.html
 |
 +-- logs/
     +-- auth_*.log
@@ -181,6 +190,16 @@ Reads `incidents.log` and generates a **log-only, simulated** response action fo
 
 Previously responded-to incidents are tracked via `response_state.txt`, preventing duplicate action records on repeated runs. The severity threshold for triggering a response is a single constant at the top of the script and can be widened (e.g. to include `HIGH`) later.
 
+### `generate_dashboard.py`
+Reads `alerts.log`, `incidents.log`, and `actions.log` and writes a single self-contained `dashboard.html` (project root) — no external CSS/JS dependencies, so it works fully offline. The dashboard shows:
+
+- Summary counts (total/critical/high/medium alerts, total and open incidents, total response actions)
+- Top source IPs
+- The 10 most recent incidents
+- The 10 most recent response actions
+
+This stage reflects current totals each time it runs rather than tracking state — there's nothing to deduplicate, since it doesn't write anything to the log pipeline itself.
+
 ### `run_soc.sh`
 Acts as the main SOC orchestrator and runs the collection, analysis, correlation, reporting, and incident generation stages sequentially.
 
@@ -236,6 +255,14 @@ Simulated response action
 actions.log (deduplicated, log-only)
 ```
 
+### Dashboard
+
+```text
+alerts.log + incidents.log + actions.log
+        ↓
+dashboard.html (static, regenerated each run)
+```
+
 ## Current Status
 
 | Component | Status |
@@ -251,8 +278,8 @@ actions.log (deduplicated, log-only)
 | Alert reporting | Complete |
 | Incident reporting | Complete |
 | Automated response | Complete |
-| Dashboard | Next |
-| Attack scenario testing | Planned |
+| Dashboard | Complete |
+| Attack scenario testing | Next |
 | Final documentation | Planned |
 
 ## Running the SOC
@@ -279,6 +306,8 @@ python3 ~/homesoc/scripts/alert_summary.py
 python3 ~/homesoc/scripts/generate_incidents.py
 
 python3 ~/homesoc/scripts/automated_response.py
+
+python3 ~/homesoc/scripts/generate_dashboard.py
 ```
 
 ## Goal
