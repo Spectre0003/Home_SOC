@@ -16,6 +16,50 @@ print("[+] Correlating authentication events...\n")
 
 
 # =============================================
+# ACCOUNT EXTRACTION
+# =============================================
+#
+# Windows event text contains multiple "Account
+# Name:" lines per event (Subject, New Logon,
+# Account For Which Logon Failed). Anchor to the
+# correct section per event type instead of
+# grabbing whichever "Account Name:" comes first.
+# =============================================
+
+def extract_windows_account(event_text, event_id):
+
+    if event_id == "4624":
+
+        match = re.search(
+            r"New Logon:.*?Account Name:\s+([^\r\n]+)",
+            event_text,
+            re.DOTALL
+        )
+
+    elif event_id == "4625":
+
+        match = re.search(
+            r"Account For Which Logon Failed:.*?"
+            r"Account Name:\s+([^\r\n]+)",
+            event_text,
+            re.DOTALL
+        )
+
+    else:
+
+        match = re.search(
+            r"Account Name:\s+([^\r\n]+)",
+            event_text
+        )
+
+    if match:
+
+        return match.group(1).strip()
+
+    return "unknown"
+
+
+# =============================================
 # CONFIGURATION
 # =============================================
 
@@ -341,16 +385,9 @@ if windows_logs:
         # Account
         # -----------------------------------------
 
-        account_match = re.search(
-            r"Account Name:\s+([^\r\n]+)",
-            event
-        )
-
-
-        account = (
-            account_match.group(1).strip()
-            if account_match
-            else "unknown"
+        account = extract_windows_account(
+            event,
+            event_id
         )
 
 

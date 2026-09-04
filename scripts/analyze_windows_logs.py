@@ -14,6 +14,50 @@ print("[+] Scanning Windows security logs...\n")
 
 
 # =============================================
+# ACCOUNT EXTRACTION
+# =============================================
+#
+# Windows event text contains multiple "Account
+# Name:" lines per event (Subject, New Logon,
+# Account For Which Logon Failed). Anchor to the
+# correct section per event type instead of
+# grabbing whichever "Account Name:" comes first.
+# =============================================
+
+def extract_account(event_text, event_id):
+
+    if event_id == "4624":
+
+        match = re.search(
+            r"New Logon:.*?Account Name:\s+([^\r\n]+)",
+            event_text,
+            re.DOTALL
+        )
+
+    elif event_id == "4625":
+
+        match = re.search(
+            r"Account For Which Logon Failed:.*?"
+            r"Account Name:\s+([^\r\n]+)",
+            event_text,
+            re.DOTALL
+        )
+
+    else:
+
+        match = re.search(
+            r"Account Name:\s+([^\r\n]+)",
+            event_text
+        )
+
+    if match:
+
+        return match.group(1).strip()
+
+    return None
+
+
+# =============================================
 # FIND WINDOWS LOGS
 # =============================================
 
@@ -125,18 +169,10 @@ for event in events:
 
         # Try to identify the account
 
-        account_match = re.search(
-            r"Account Name:\s+([^\r\n]+)",
-            event
-        )
+        account = extract_account(event, event_id)
 
 
-        if account_match:
-
-            account = (
-                account_match.group(1).strip()
-            )
-
+        if account:
 
             failed_by_account[account] = (
                 failed_by_account.get(account, 0)
