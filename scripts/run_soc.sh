@@ -31,9 +31,12 @@ python3 /home/socadmin/homesoc/scripts/generate_incidents.py
 echo
 echo "[+] Running automated response..."
 python3 /home/socadmin/homesoc/scripts/automated_response.py
- 
+
+echo
+echo "[+] Generating dashboard..."
+python3 /home/socadmin/homesoc/scripts/generate_dashboard.py
+
 echo
 echo "================================"
 echo "[+] HOME SOC RUN COMPLETE"
 echo "================================"
- 
