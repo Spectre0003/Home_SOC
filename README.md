@@ -18,8 +18,9 @@ The project has completed its core SOC detection and reporting pipeline:
 - Structured incident/case reporting
 - Automated response (log-only simulated actions)
 - Dashboard/visualization
+- Attack scenario testing (validated end-to-end against both Linux and Windows targets)
 
-**Current stage:** moving from dashboard/visualization into attack scenario testing and final documentation.
+**Current stage:** final documentation. All core pipeline stages have been built and validated end-to-end.
 
 ## Architecture
 
@@ -279,8 +280,42 @@ dashboard.html (static, regenerated each run)
 | Incident reporting | Complete |
 | Automated response | Complete |
 | Dashboard | Complete |
-| Attack scenario testing | Next |
-| Final documentation | Planned |
+| Attack scenario testing | Complete |
+| Final documentation | Complete |
+
+## Testing & Validation
+
+The full pipeline was validated end to end using Kali Linux against both lab targets, rather than relying only on incidental login activity.
+
+### Linux target (SSH)
+
+A brute-force wordlist attack via Hydra against the Ubuntu SOC server's own SSH service, ending in a real successful login, confirmed:
+
+- Failed-login and brute-force-by-IP detection in `analyze_linux_logs.py`
+- The correlation rule in `correlate_events.py` (failed attempts followed by a success, same source and account)
+- Correct flow through incident generation, simulated response, and the dashboard
+
+### Windows target (SMB)
+
+Hydra's SSH and RDP modules were not viable against the Windows target (SSH isn't installed; RDP was blocked by Windows Firewall until Remote Desktop was enabled). SMB brute-force via Metasploit's `auxiliary/scanner/smb/smb_login` succeeded and confirmed the same end-to-end flow on the Windows side — with one real bug found and fixed along the way:
+
+**Bug found:** `analyze_windows_logs.py` and `correlate_events.py` both extracted the account name from a raw Windows event using the *first* `Account Name:` match in the event text. Windows event messages contain multiple `Account Name:` lines (under `Subject:`, `New Logon:`, and `Account For Which Logon Failed:` depending on event type), and the first one isn't reliably the meaningful one — it inconsistently returned `-` or a system/computer account instead of the actual attempted username, depending on logon type.
+
+**Fix:** both scripts now anchor the extraction to the correct labeled section per event ID (`New Logon:` for 4624, `Account For Which Logon Failed:` for 4625) instead of taking whichever `Account Name:` line appears first.
+
+This was caught specifically because Phase 14 exercised the pipeline with real, deliberate Windows authentication failures rather than only reviewing the code — the bug did not surface during earlier development because the correlation logic had not yet processed genuine Windows brute-force data end to end.
+
+## Known Limitations / Future Work
+
+This is a learning/portfolio SOC, not a production system. Known gaps, by design or by scope:
+
+- **Incident status never transitions.** Every incident defaults to `open` and nothing in the pipeline currently closes, triages, or re-scores one — there's no analyst workflow for marking something resolved.
+- **Automated response only covers CRITICAL correlated incidents with a known source IP.** HIGH and MEDIUM incidents (raw brute-force or repeated-failure detections that didn't also correlate with a success) don't currently get a response action.
+- **Response actions are simulated, log-only.** `actions.log` records what *would* be blocked; nothing is wired to an actual firewall, `hosts.deny`, or similar enforcement point.
+- **Windows log collection is manual.** The PowerShell collector script pulls the latest Security events and `scp`s them to the SOC server, but it's run by hand, not scheduled or triggered automatically the way `collect_linux_logs.sh` effectively is via `run_soc.sh`.
+- **Only the most recent Windows log file is analyzed per run.** `analyze_windows_logs.py` and `correlate_events.py` both pick the newest `windows_*.log` via `glob` — older Windows log files aren't reprocessed once a newer one exists.
+- **No log rotation or retention policy.** `alerts.log`, `incidents.log`, and `actions.log` all grow indefinitely; nothing archives or prunes old entries.
+- **Detection is threshold-based, not behavioral or ML-driven.** Rules like "5+ failed logins" or "3+ failures then a success" are simple by design — intentional for a learning project, but worth stating plainly rather than implying anything more sophisticated.
 
 ## Running the SOC
 

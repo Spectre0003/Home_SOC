@@ -2,9 +2,9 @@
 
 ## 1. Current Status
 
-The Home SOC has completed its core collection, analysis, detection, correlation, alerting, incident reporting, automated response, and dashboard pipeline.
+The Home SOC has completed its full pipeline — collection, analysis, detection, correlation, alerting, incident reporting, automated response, dashboard, and end-to-end attack scenario testing against both Linux and Windows targets.
 
-**Current phase:** Attack Scenario Testing → Final Documentation.
+**Current phase:** Final Documentation (this document and README.md).
 
 ## 2. Architecture
 
@@ -185,19 +185,14 @@ The Home SOC has completed its core collection, analysis, detection, correlation
 | Incident/case reporting | Complete |
 | Automated response | Complete |
 | Dashboard/visualization | Complete |
-| Attack scenario testing | Next |
-| Final documentation | Planned |
+| Attack scenario testing | Complete |
+| Final documentation | Complete |
 
-## 7. Next Architecture Additions
+## 7. Attack Scenario Testing Summary
 
-The next component will build on the existing pipeline rather than replace it:
+The pipeline was validated end to end with deliberate attacks from Kali against both lab targets rather than relying on incidental traffic:
 
-```text
-Home SOC pipeline (end to end)
-    |
-    v
-Attack Scenario Testing
-    |
-    v
-Final Documentation
-```
+- **Linux (SSH):** Hydra brute-force against Ubuntu, ending in a real successful login. Confirmed detection, correlation, incident generation, simulated response, and dashboard reflection.
+- **Windows (SMB):** Metasploit `smb_login` brute-force against the Windows target, after SSH (not installed) and RDP (blocked by firewall until Remote Desktop was enabled) proved non-viable. This testing surfaced and led to the fix of a real account-extraction bug in `analyze_windows_logs.py` and `correlate_events.py` — both scripts were taking the first `Account Name:` match in a Windows event rather than anchoring to the correct section per event type (`New Logon:` for 4624, `Account For Which Logon Failed:` for 4625), which had been silently misattributing accounts on correlated Windows incidents.
+
+See `README.md` for full testing detail and the project's known limitations / future work.
