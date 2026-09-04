@@ -1,0 +1,12 @@
+# Generated log data — environment-specific, not part of the codebase
+logs/*.log
+logs/correlation_state.txt
+logs/incident_state.txt
+logs/response_state.txt
+
+# Generated dashboard output
+dashboard.html
+
+# Python
+__pycache__/
+*.pyc
