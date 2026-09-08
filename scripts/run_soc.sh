@@ -1,42 +1,23 @@
 #!/bin/bash
+#
+# Home SOC orchestrator.
+#
+# Kept as a thin wrapper so existing habits, cron entries, and the
+# documented command in README.md keep working. Everything it used to do
+# inline now lives in the homesoc package:
+#
+#     homesoc run              the whole pipeline
+#     homesoc collect          one stage
+#     homesoc --help           what is available
+#
+# Any arguments given here are passed through, so `run_soc.sh -v` works.
 
-echo "================================"
-echo "        HOME SOC RUN"
-echo "================================"
+set -euo pipefail
 
-echo
-echo "[+] Starting log collection..."
-/home/socadmin/homesoc/scripts/collect_linux_logs.sh
+if ! command -v homesoc > /dev/null 2>&1; then
+    echo "[!] 'homesoc' not found on PATH."
+    echo "[!] Activate the virtualenv, or run: pip install -e ."
+    exit 2
+fi
 
-echo
-echo "[+] Starting log analysis..."
-python3 /home/socadmin/homesoc/scripts/analyze_linux_logs.py
-
-echo
-echo "[+] Starting Windows log analysis..."
-python3 /home/socadmin/homesoc/scripts/analyze_windows_logs.py
-
-echo
-echo "[+] Starting event correlation..."
-python3 /home/socadmin/homesoc/scripts/correlate_events.py
-
-echo
-echo "[+] Generating alert summary..."
-python3 /home/socadmin/homesoc/scripts/alert_summary.py
-
-echo
-echo "[+] Generating incidents..."
-python3 /home/socadmin/homesoc/scripts/generate_incidents.py
-
-echo
-echo "[+] Running automated response..."
-python3 /home/socadmin/homesoc/scripts/automated_response.py
-
-echo
-echo "[+] Generating dashboard..."
-python3 /home/socadmin/homesoc/scripts/generate_dashboard.py
-
-echo
-echo "================================"
-echo "[+] HOME SOC RUN COMPLETE"
-echo "================================"
+exec homesoc run "$@"

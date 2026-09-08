@@ -176,6 +176,46 @@ def cmd_correlate(config, args) -> int:
     return EXIT_OK
 
 
+def cmd_summary(config, args) -> int:
+    """Summarise the accumulated alert log."""
+
+    from homesoc.report import summary
+
+    summary.summarize(config)
+
+    return EXIT_OK
+
+
+def cmd_incidents(config, args) -> int:
+    """Convert new alerts into structured incident records."""
+
+    from homesoc.report import incidents
+
+    incidents.generate(config)
+
+    return EXIT_OK
+
+
+def cmd_respond(config, args) -> int:
+    """Generate simulated response actions for qualifying incidents."""
+
+    from homesoc.respond import actions
+
+    actions.respond(config)
+
+    return EXIT_OK
+
+
+def cmd_dashboard(config, args) -> int:
+    """Regenerate the static HTML dashboard."""
+
+    from homesoc.report import dashboard
+
+    dashboard.generate(config)
+
+    return EXIT_OK
+
+
 def cmd_run(config, args) -> int:
     """Run the full pipeline."""
 
@@ -183,10 +223,11 @@ def cmd_run(config, args) -> int:
         ("collect", cmd_collect),
         ("analyze", cmd_analyze),
         ("correlate", cmd_correlate),
+        ("summary", cmd_summary),
+        ("incidents", cmd_incidents),
+        ("respond", cmd_respond),
+        ("dashboard", cmd_dashboard),
     ]
-
-    # Reporting, response, and dashboard stages join this list as they
-    # are ported (Stage 1, pass 3c).
 
     failures = 0
 
@@ -212,6 +253,10 @@ COMMANDS = {
     "collect": (cmd_collect, "Collect logs from configured sources"),
     "analyze": (cmd_analyze, "Analyze collected logs and raise alerts"),
     "correlate": (cmd_correlate, "Correlate authentication events"),
+    "summary": (cmd_summary, "Summarise the accumulated alert log"),
+    "incidents": (cmd_incidents, "Convert new alerts into incident records"),
+    "respond": (cmd_respond, "Generate simulated response actions"),
+    "dashboard": (cmd_dashboard, "Regenerate the static HTML dashboard"),
     "run": (cmd_run, "Run the full pipeline"),
 }
 
