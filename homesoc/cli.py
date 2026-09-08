@@ -136,13 +136,57 @@ def cmd_collect(config, args) -> int:
     return EXIT_OK if collected else EXIT_FAILED
 
 
+def cmd_analyze(config, args) -> int:
+    """Analyze collected logs and raise alerts."""
+
+    platform = getattr(args, "platform", "all")
+
+    alerts = 0
+
+    if platform in ("all", "linux"):
+
+        from homesoc.detect import linux
+
+        logger.info("--- Linux analysis ---")
+        alerts += len(linux.analyze(config).alerts)
+
+    if platform in ("all", "windows"):
+
+        from homesoc.detect import windows
+
+        logger.info("--- Windows analysis ---")
+        alerts += len(windows.analyze(config).alerts)
+
+    logger.info("Analysis complete: %d alert(s) raised", alerts)
+
+    return EXIT_OK
+
+
+def cmd_correlate(config, args) -> int:
+    """Correlate authentication events across platforms."""
+
+    from homesoc.detect import correlate
+
+    result = correlate.correlate(config)
+
+    logger.info(
+        "Correlation complete: %d alert(s) raised", len(result.alerts)
+    )
+
+    return EXIT_OK
+
+
 def cmd_run(config, args) -> int:
     """Run the full pipeline."""
 
-    stages = [("collect", cmd_collect)]
+    stages = [
+        ("collect", cmd_collect),
+        ("analyze", cmd_analyze),
+        ("correlate", cmd_correlate),
+    ]
 
-    # Analysis, correlation, reporting, response, and dashboard stages
-    # join this list as they are ported (Stage 1, passes 3b and 3c).
+    # Reporting, response, and dashboard stages join this list as they
+    # are ported (Stage 1, pass 3c).
 
     failures = 0
 
@@ -166,6 +210,8 @@ def cmd_run(config, args) -> int:
 COMMANDS = {
     "config": (cmd_config, "Show and check the resolved configuration"),
     "collect": (cmd_collect, "Collect logs from configured sources"),
+    "analyze": (cmd_analyze, "Analyze collected logs and raise alerts"),
+    "correlate": (cmd_correlate, "Correlate authentication events"),
     "run": (cmd_run, "Run the full pipeline"),
 }
 
@@ -177,28 +223,32 @@ COMMANDS = {
 
 def build_parser() -> argparse.ArgumentParser:
 
-    parser = argparse.ArgumentParser(
-        prog="homesoc",
-        description="Home SOC — log collection, detection, and reporting",
-    )
+    # Shared options are attached to both the top-level parser and every
+    # subparser, so `homesoc -v collect` and `homesoc collect -v` both
+    # work. Without this, argparse only accepts global flags before the
+    # subcommand — which is the correct-but-surprising behaviour that
+    # makes people think a flag is unsupported.
+    #
+    # SUPPRESS keeps unspecified options out of the namespace entirely,
+    # so a subparser's default cannot overwrite a value given globally.
 
-    parser.add_argument(
-        "--version", action="version", version=f"homesoc {__version__}"
-    )
+    common = argparse.ArgumentParser(add_help=False)
 
-    parser.add_argument(
+    common.add_argument(
         "-c",
         "--config",
         metavar="PATH",
+        default=argparse.SUPPRESS,
         help="Path to config.yaml (default: search standard locations)",
     )
 
-    verbosity = parser.add_mutually_exclusive_group()
+    verbosity = common.add_mutually_exclusive_group()
 
     verbosity.add_argument(
         "-v",
         "--verbose",
         action="store_true",
+        default=argparse.SUPPRESS,
         help="Show debug output",
     )
 
@@ -206,20 +256,41 @@ def build_parser() -> argparse.ArgumentParser:
         "-q",
         "--quiet",
         action="store_true",
+        default=argparse.SUPPRESS,
         help="Show warnings and errors only",
+    )
+
+    parser = argparse.ArgumentParser(
+        prog="homesoc",
+        parents=[common],
+        description="Home SOC — log collection, detection, and reporting",
+    )
+
+    parser.add_argument(
+        "--version", action="version", version=f"homesoc {__version__}"
     )
 
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     for name, (_, help_text) in COMMANDS.items():
 
-        subparser = subparsers.add_parser(name, help=help_text)
+        subparser = subparsers.add_parser(
+            name, parents=[common], help=help_text
+        )
 
         if name == "config":
             subparser.add_argument(
                 "--check",
                 action="store_true",
-                help="Verify that configured paths exist",
+                help="Verify that configured paths exist and are usable",
+            )
+
+        if name == "analyze":
+            subparser.add_argument(
+                "--platform",
+                choices=("all", "linux", "windows"),
+                default="all",
+                help="Which platform's logs to analyze (default: all)",
             )
 
     return parser
@@ -239,15 +310,31 @@ def main(argv=None) -> int:
         parser.print_help()
         return EXIT_USAGE
 
+    # SUPPRESS means these are absent unless the user gave them.
+
+    config_path = getattr(args, "config", None)
+    verbose = getattr(args, "verbose", False)
+    quiet = getattr(args, "quiet", False)
+
+    # The mutually-exclusive group is enforced within each parser, so
+    # `homesoc -v collect -q` slips past it.
+
+    if verbose and quiet:
+        print(
+            "[!] --verbose and --quiet cannot be used together",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+
     try:
-        config = Config.load(args.config)
+        config = Config.load(config_path)
 
     except ConfigError as error:
         # Logging is not configured yet, so write directly.
         print(f"[!] Configuration error: {error}", file=sys.stderr)
         return EXIT_USAGE
 
-    setup_logging(config, verbose=args.verbose, quiet=args.quiet)
+    setup_logging(config, verbose=verbose, quiet=quiet)
 
     if config.unknown_keys and args.command != "config":
 
