@@ -4,7 +4,7 @@ A small, custom Security Operations Center (SOC) lab built to learn and demonstr
 
 ## Current Progress
 
-The project has completed its core SOC detection and reporting pipeline:
+v1.0 completed the core SOC detection and reporting pipeline. v1.1 restructured that pipeline from a folder of standalone scripts into an installable, configurable Python package — the same detections, the same outputs, on a foundation that further stages can build on.
 
 - Linux log collection
 - Linux authentication and sudo analysis
@@ -19,8 +19,63 @@ The project has completed its core SOC detection and reporting pipeline:
 - Automated response (log-only simulated actions)
 - Dashboard/visualization
 - Attack scenario testing (validated end-to-end against both Linux and Windows targets)
+- **Installable package with external configuration and a single CLI (v1.1)**
 
-**Current stage:** final documentation. All core pipeline stages have been built and validated end-to-end.
+**Current stage:** v1.1 complete. See `ROADMAP.md` for the ten-stage plan through v2.0.
+
+## Installation
+
+Requires Python 3.9 or later.
+
+```bash
+git clone <repository-url> homesoc
+cd homesoc
+
+python3 -m venv .venv
+source .venv/bin/activate
+
+pip install -e .
+
+cp config.example.yaml config.yaml
+```
+
+If `python3 -m venv` fails with an `ensurepip` error, install the venv package first (`sudo apt install python3-venv`).
+
+Verify the installation:
+
+```bash
+homesoc config --check
+```
+
+## Configuration
+
+All paths, thresholds, and timezones live in `config.yaml`. Nothing in the source contains an absolute path or a magic number.
+
+`config.yaml` is gitignored; `config.example.yaml` is committed and documents every key. Configuration is deep-merged over built-in defaults, so a file naming only the two or three values you want to change is valid — and the pipeline runs correctly with no config file at all.
+
+Resolution order (first match wins):
+
+```text
+1. --config PATH
+2. $HOMESOC_CONFIG
+3. ./config.yaml
+4. ~/.config/homesoc/config.yaml
+5. built-in defaults
+```
+
+Configuration is validated at load. A threshold below 1, an unknown severity name, an unresolvable timezone, or a circular path reference fails immediately with a specific message rather than partway through a run. Unrecognised keys are reported as probable typos rather than silently ignored.
+
+Key settings:
+
+| Key | Purpose |
+|---|---|
+| `paths.home` | Root for runtime data (logs, dashboard) |
+| `collection.linux.auth_log` | Source authentication log |
+| `collection.windows.timezone` | Endpoint timezone; IANA name or fixed offset |
+| `detection.*.threshold` | Per-platform detection thresholds |
+| `correlation.window_minutes` | Correlation time window |
+| `correlation.min_failures` | Failures required before a success correlates |
+| `response.severities` | Which severities trigger a simulated action |
 
 ## Architecture
 
@@ -81,20 +136,46 @@ Linux Analyzer   Windows Analyzer
 ```text
 homesoc/
 |
++-- homesoc/                     # the installable package
+|   +-- __init__.py
+|   +-- cli.py                   # single entry point, subcommand dispatch
+|   |
+|   +-- common/                  # shared across every stage
+|   |   +-- config.py            # configuration loading and validation
+|   |   +-- classification.py    # severity, detection reason, platform
+|   |   +-- patterns.py          # log regexes and field extraction
+|   |   +-- log.py               # logging setup
+|   |   +-- store.py             # alert, state, and JSONL file I/O
+|   |
+|   +-- collect/
+|   |   +-- linux.py
+|   |
+|   +-- detect/
+|   |   +-- events.py            # auth event record, log discovery
+|   |   +-- linux.py
+|   |   +-- windows.py
+|   |   +-- correlate.py
+|   |
+|   +-- report/
+|   |   +-- summary.py
+|   |   +-- incidents.py
+|   |   +-- dashboard.py
+|   |
+|   +-- respond/
+|       +-- actions.py
+|
 +-- scripts/
-|   +-- collect_linux_logs.sh
-|   +-- analyze_linux_logs.py
-|   +-- analyze_windows_logs.py
-|   +-- correlate_events.py
-|   +-- alert_summary.py
-|   +-- generate_incidents.py
-|   +-- automated_response.py
-|   +-- generate_dashboard.py
-|   +-- run_soc.sh
+|   +-- run_soc.sh               # wrapper around `homesoc run`
+|   +-- collect_windows_logs.ps1 # replaced in Stage 2
 |
-+-- dashboard.html
++-- config.example.yaml
++-- pyproject.toml
++-- ROADMAP.md
++-- CHANGELOG.md
++-- docs/decisions/              # architecture decision records
 |
-+-- logs/
++-- dashboard.html               # generated
++-- logs/                        # generated
     +-- auth_*.log
     +-- journal_*.log
     +-- windows_*.log
@@ -104,38 +185,53 @@ homesoc/
     +-- incident_state.txt
     +-- actions.log
     +-- response_state.txt
+    +-- homesoc.log              # run log, rotated
 ```
 
 ## Components
 
-### `collect_linux_logs.sh`
-Collects Linux authentication logs and system journal data and stores timestamped copies in the SOC log directory.
+### `homesoc/cli.py`
+Single entry point. Stages are registered in a command table and imported lazily inside their handler, so a stage that fails to import breaks that command rather than the whole CLI. Global flags (`--config`, `--verbose`, `--quiet`) work before or after the subcommand.
 
-### `analyze_linux_logs.py`
+Exit codes: `0` success, `1` a stage reported a problem, `2` usage or configuration error, `130` interrupted.
+
+### `homesoc/common/config.py`
+Loads, merges, and validates configuration; resolves and expands all paths; exposes typed values (correlation window as a `timedelta`, endpoint timezone as a `tzinfo`).
+
+### `homesoc/common/classification.py`
+One signature table mapping an alert message to its severity, detection reason, and platform. v1.0 derived these from three separate if-chains across three files, which agreed by coincidence rather than by construction.
+
+### `homesoc/common/patterns.py`
+Every log regex and extraction helper. The Windows account extractor — anchored to `New Logon:` for 4624 and `Account For Which Logon Failed:` for 4625 — lives here once, rather than being duplicated between the analyzer and the correlator.
+
+### `homesoc/common/log.py`
+Console output plus a rotating run log. The console honours `--verbose` / `--quiet`; the file always records DEBUG, because the run you need detail from is the one that already happened.
+
+### `homesoc/common/store.py`
+All reading and writing of `alerts.log`, the state files, and the JSONL incident and action logs. State entries are buffered and written on flush, so a run that fails partway does not record work it never completed.
+
+### `homesoc/collect/linux.py`
+Collects Linux authentication logs and system journal data into timestamped files. A failed copy or a `journalctl` error is now an error rather than a silent success.
+
+### `homesoc/detect/linux.py`
 Analyzes collected Linux authentication logs for:
 
 - Failed logins
 - Successful logins
-- Brute-force activity
+- Brute-force activity by source IP
 - Sudo authentication failures
 - Sudo command execution
 
-Detected alerts are written to `alerts.log`.
-
-### `analyze_windows_logs.py`
-Analyzes collected Windows Security logs and currently handles:
+### `homesoc/detect/windows.py`
+Analyzes the most recent collected Windows Security log:
 
 - Event ID 4624 — successful logon
 - Event ID 4625 — failed logon
 - Event ID 4672 — privileged logon activity
 - Repeated failed logins by account
 
-Detected alerts are written to `alerts.log`.
-
-### `correlate_events.py`
-Correlates authentication events across collected logs.
-
-The main correlation currently looks for:
+### `homesoc/detect/correlate.py`
+Correlates authentication events across platforms:
 
 ```text
 Multiple failed logins
@@ -149,60 +245,52 @@ Short time window
 Authentication attack pattern
 ```
 
-Correlation state is stored in `correlation_state.txt` to prevent the same correlation from generating repeated alerts.
+Correlation state is stored in `correlation_state.txt`. Fingerprints are computed exactly as in v1.0, so state written before the refactor still suppresses the same correlations.
 
-### `alert_summary.py`
-Reads `alerts.log` and provides:
+### `homesoc/report/summary.py`
+Total alert count, severity breakdown, top source IPs (flagging any outside RFC1918 space), recent alerts, and a high-level assessment.
 
-- Total alert count
-- Severity breakdown
-- Top source IPs
-- Recent alerts
-- High-level threat assessment
+### `homesoc/report/incidents.py`
+Converts new alerts into structured incident records in `incidents.log`, one JSON object per line, with incident ID, timestamp, severity, platform, source IP, target account, failed-attempt count, successful-auth flag, detection reason, originating alert text, and status.
 
-### `generate_incidents.py`
-Reads `alerts.log` and converts new alerts into structured incident records written to `incidents.log` (one JSON object per line). Each incident includes:
+### `homesoc/respond/actions.py`
+Generates **log-only, simulated** response actions for incidents meeting the configured severity gate with a known source IP. No firewall rules, `hosts.deny` entries, or other system-level changes are made. The gate and action type are configuration, not constants.
 
-- Incident ID
-- Timestamp
-- Severity
-- Platform (Linux / Windows / Correlated)
-- Source IP
-- Target account
-- Failed-attempt count
-- Successful-auth flag
-- Detection reason
-- The originating alert text
-- Status (defaults to `open`)
+### `homesoc/report/dashboard.py`
+Writes a single self-contained `dashboard.html` with no external CSS or JS, so it works fully offline. Shows summary counts, top source IPs, and the most recent incidents and response actions.
 
-Previously processed alerts are tracked via `incident_state.txt`, so re-running the pipeline does not generate duplicate incidents for alerts already reported.
+### `scripts/run_soc.sh`
+Thin wrapper around `homesoc run`, kept so existing habits and documented commands keep working. Arguments are passed through.
 
-### `automated_response.py`
-Reads `incidents.log` and generates a **log-only, simulated** response action for each new `CRITICAL` incident that has a known source IP. No firewall rules, `hosts.deny` entries, or other system-level changes are made — this stage only demonstrates the detect-to-response mechanism. Each action record written to `actions.log` includes:
+## Running the SOC
 
-- Action ID
-- Linked incident ID
-- Timestamp
-- Action type (currently `block_ip`)
-- Target (source IP)
-- Reason (carried over from the incident's detection reason)
-- Status (`simulated`)
-- A note confirming no real change was made
+```bash
+homesoc run
+```
 
-Previously responded-to incidents are tracked via `response_state.txt`, preventing duplicate action records on repeated runs. The severity threshold for triggering a response is a single constant at the top of the script and can be widened (e.g. to include `HIGH`) later.
+Or individual stages:
 
-### `generate_dashboard.py`
-Reads `alerts.log`, `incidents.log`, and `actions.log` and writes a single self-contained `dashboard.html` (project root) — no external CSS/JS dependencies, so it works fully offline. The dashboard shows:
+```bash
+homesoc collect
+homesoc analyze                 # both platforms
+homesoc analyze --platform windows
+homesoc correlate
+homesoc summary
+homesoc incidents
+homesoc respond
+homesoc dashboard
+```
 
-- Summary counts (total/critical/high/medium alerts, total and open incidents, total response actions)
-- Top source IPs
-- The 10 most recent incidents
-- The 10 most recent response actions
+Useful flags:
 
-This stage reflects current totals each time it runs rather than tracking state — there's nothing to deduplicate, since it doesn't write anything to the log pipeline itself.
+```bash
+homesoc config --check          # verify paths exist and are usable
+homesoc run --verbose           # show every matched log line
+homesoc run --quiet             # warnings and errors only
+homesoc -c /tmp/test.yaml run   # run against an isolated config
+```
 
-### `run_soc.sh`
-Acts as the main SOC orchestrator and runs the collection, analysis, correlation, reporting, and incident generation stages sequentially.
+`python3 -m homesoc.cli run` is equivalent and does not depend on the console script being installed.
 
 ## Current Detection Coverage
 
@@ -236,34 +324,6 @@ Successful authentication
 Correlated attack alert
 ```
 
-### Incident Reporting
-
-```text
-alerts.log
-        ↓
-Structured incident record
-        ↓
-incidents.log (deduplicated)
-```
-
-### Automated Response
-
-```text
-incidents.log (CRITICAL + known source IP)
-        ↓
-Simulated response action
-        ↓
-actions.log (deduplicated, log-only)
-```
-
-### Dashboard
-
-```text
-alerts.log + incidents.log + actions.log
-        ↓
-dashboard.html (static, regenerated each run)
-```
-
 ## Current Status
 
 | Component | Status |
@@ -281,69 +341,45 @@ dashboard.html (static, regenerated each run)
 | Automated response | Complete |
 | Dashboard | Complete |
 | Attack scenario testing | Complete |
-| Final documentation | Complete |
+| Documentation | Complete |
+| Package structure and configuration (v1.1) | Complete |
+| Normalized event schema (v1.2) | Planned |
 
 ## Testing & Validation
 
-The full pipeline was validated end to end using Kali Linux against both lab targets, rather than relying only on incidental login activity.
+The pipeline was validated end to end using Kali Linux against both lab targets, rather than relying only on incidental login activity.
 
 ### Linux target (SSH)
 
-A brute-force wordlist attack via Hydra against the Ubuntu SOC server's own SSH service, ending in a real successful login, confirmed:
-
-- Failed-login and brute-force-by-IP detection in `analyze_linux_logs.py`
-- The correlation rule in `correlate_events.py` (failed attempts followed by a success, same source and account)
-- Correct flow through incident generation, simulated response, and the dashboard
+A brute-force wordlist attack via Hydra against the Ubuntu SOC server's own SSH service, ending in a real successful login, confirmed failed-login and brute-force-by-IP detection, the correlation rule, and correct flow through incident generation, simulated response, and the dashboard.
 
 ### Windows target (SMB)
 
-Hydra's SSH and RDP modules were not viable against the Windows target (SSH isn't installed; RDP was blocked by Windows Firewall until Remote Desktop was enabled). SMB brute-force via Metasploit's `auxiliary/scanner/smb/smb_login` succeeded and confirmed the same end-to-end flow on the Windows side — with one real bug found and fixed along the way:
+Hydra's SSH and RDP modules were not viable against the Windows target (SSH isn't installed; RDP was blocked by Windows Firewall until Remote Desktop was enabled). SMB brute-force via Metasploit's `auxiliary/scanner/smb/smb_login` succeeded and confirmed the same end-to-end flow — with one real bug found and fixed along the way:
 
-**Bug found:** `analyze_windows_logs.py` and `correlate_events.py` both extracted the account name from a raw Windows event using the *first* `Account Name:` match in the event text. Windows event messages contain multiple `Account Name:` lines (under `Subject:`, `New Logon:`, and `Account For Which Logon Failed:` depending on event type), and the first one isn't reliably the meaningful one — it inconsistently returned `-` or a system/computer account instead of the actual attempted username, depending on logon type.
+**Bug found:** the Windows analyzer and the correlator both extracted the account name using the *first* `Account Name:` match in the event text. Windows event messages contain several such lines (under `Subject:`, `New Logon:`, and `Account For Which Logon Failed:`), and the first is not reliably the meaningful one — it returned `-` or a system account instead of the attempted username, depending on logon type.
 
-**Fix:** both scripts now anchor the extraction to the correct labeled section per event ID (`New Logon:` for 4624, `Account For Which Logon Failed:` for 4625) instead of taking whichever `Account Name:` line appears first.
+**Fix:** extraction is anchored to the correct labeled section per event ID. As of v1.1 that extractor exists in exactly one place (`homesoc/common/patterns.py`); the duplication is what allowed the bug to be fixed in one file and not the other in the first place.
 
-This was caught specifically because Phase 14 exercised the pipeline with real, deliberate Windows authentication failures rather than only reviewing the code — the bug did not surface during earlier development because the correlation logic had not yet processed genuine Windows brute-force data end to end.
+### v1.1 refactor verification
+
+The refactor was verified rather than assumed. v1.0's three `get_severity()` implementations and its `get_detection_reason()` were run side by side with the new classification module across every alert string the pipeline can emit — zero mismatches, so existing `incidents.log` records classify identically. The full pipeline was then run end to end against synthetic Linux and Windows attack data, and re-run to confirm correlation and response deduplication still suppress correctly.
 
 ## Known Limitations / Future Work
 
-This is a learning/portfolio SOC, not a production system. Known gaps, by design or by scope:
+This is a learning/portfolio SOC, not a production system. Known gaps, by design or by scope. `ROADMAP.md` tracks each with a defect ID and the stage that addresses it.
 
-- **Incident status never transitions.** Every incident defaults to `open` and nothing in the pipeline currently closes, triages, or re-scores one — there's no analyst workflow for marking something resolved.
-- **Automated response only covers CRITICAL correlated incidents with a known source IP.** HIGH and MEDIUM incidents (raw brute-force or repeated-failure detections that didn't also correlate with a success) don't currently get a response action.
-- **Response actions are simulated, log-only.** `actions.log` records what *would* be blocked; nothing is wired to an actual firewall, `hosts.deny`, or similar enforcement point.
-- **Windows log collection is manual.** The PowerShell collector script pulls the latest Security events and `scp`s them to the SOC server, but it's run by hand, not scheduled or triggered automatically the way `collect_linux_logs.sh` effectively is via `run_soc.sh`.
-- **Only the most recent Windows log file is analyzed per run.** `analyze_windows_logs.py` and `correlate_events.py` both pick the newest `windows_*.log` via `glob` — older Windows log files aren't reprocessed once a newer one exists.
-- **No log rotation or retention policy.** `alerts.log`, `incidents.log`, and `actions.log` all grow indefinitely; nothing archives or prunes old entries.
-- **Detection is threshold-based, not behavioral or ML-driven.** Rules like "5+ failed logins" or "3+ failures then a success" are simple by design — intentional for a learning project, but worth stating plainly rather than implying anything more sophisticated.
-
-## Running the SOC
-
-Run the complete pipeline with:
-
-```bash
-~/homesoc/scripts/run_soc.sh
-```
-
-Or run individual components directly:
-
-```bash
-~/homesoc/scripts/collect_linux_logs.sh
-
-python3 ~/homesoc/scripts/analyze_linux_logs.py
-
-python3 ~/homesoc/scripts/analyze_windows_logs.py
-
-python3 ~/homesoc/scripts/correlate_events.py
-
-python3 ~/homesoc/scripts/alert_summary.py
-
-python3 ~/homesoc/scripts/generate_incidents.py
-
-python3 ~/homesoc/scripts/automated_response.py
-
-python3 ~/homesoc/scripts/generate_dashboard.py
-```
+- **Duplicate ingest.** Collection copies the entire `auth.log` on every run, and analysis reads every collected copy, so one event is counted once per run. Detection counts inflate and correlations re-fire with a changed count. (D1, D2 — Stage 2)
+- **Repeated alerts become repeated incidents.** The Linux and Windows analyzers have no alert state file and re-append identical alerts each run; incident fingerprints hash the alert line including its timestamp, so each run creates fresh incidents for the same finding. (D3, D4 — Stage 3)
+- **Incident status never transitions.** Every incident defaults to `open`; nothing closes, triages, or re-scores one. (Stage 7)
+- **Response only covers CRITICAL incidents with a known source IP.** Configurable now, but HIGH and MEDIUM incidents get no action by default. (Stage 7)
+- **Response actions are simulated, log-only.** Nothing is wired to a firewall or other enforcement point — a deliberate boundary, not an oversight.
+- **Windows log collection is manual and pushes to the SOC.** The PowerShell collector is run by hand and `scp`s to the SOC server, which means the monitored endpoint holds a key to the monitoring host. (D10, D13 — Stage 2)
+- **Windows events are parsed from rendered message text**, which is locale-dependent and structurally fragile. (D12 — Stage 2)
+- **Only the most recent Windows log file is analyzed per run.** Older files are never reprocessed once a newer one exists. (Stage 8)
+- **No log rotation or retention policy** for `alerts.log`, `incidents.log`, or `actions.log`. The run log rotates; the pipeline logs do not. (Stage 3)
+- **No automated tests.** (Stage 5)
+- **Detection is threshold-based, not behavioral or ML-driven.** Rules like "5+ failed logins" are simple by design — intentional for a learning project, but worth stating plainly. (Stage 4)
 
 ## Goal
 
