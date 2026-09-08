@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "homesoc"
+version = "1.1.0.dev0"
+description = "A small, self-built security operations centre pipeline"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "PyYAML>=6.0",
+    # Needed for IANA timezone names on systems without a tz database
+    # (notably Windows). Harmless elsewhere.
+    "tzdata>=2024.1; platform_system == 'Windows'",
+]
+
+# The console entry point is added in Stage 1 module 3, once
+# homesoc/cli.py exists:
+#
+# [project.scripts]
+# homesoc = "homesoc.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+    "black>=24.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["homesoc*"]
+
+[tool.black]
+line-length = 79
+
+[tool.ruff]
+line-length = 79

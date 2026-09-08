@@ -1,3 +1,7 @@
+# Local configuration — host-specific, never committed.
+# config.example.yaml is committed instead.
+config.yaml
+
 # Generated log data — environment-specific, not part of the codebase
 logs/*.log
 logs/correlation_state.txt
@@ -10,3 +14,6 @@ dashboard.html
 # Python
 __pycache__/
 *.pyc
+*.egg-info/
+.venv/
+venv/

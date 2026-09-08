@@ -1,0 +1,33 @@
+# =============================================
+# LINE ENDINGS
+# =============================================
+#
+# This repo is edited on Windows and executed on Linux. Without this
+# file, shell scripts committed from Windows arrive on Ubuntu with CRLF
+# and fail with:
+#
+#     /bin/bash^M: bad interpreter: No such file or directory
+#
+# Normalise everything to LF in the repository, and check out CRLF only
+# for the files that genuinely need it.
+# =============================================
+
+# Default: normalise to LF in the repo, native on checkout.
+* text=auto eol=lf
+
+# Must be LF — executed by Linux interpreters.
+*.sh    text eol=lf
+*.py    text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.md    text eol=lf
+
+# Must be CRLF — executed by PowerShell on Windows.
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
+
+# Never touched.
+*.png   binary
+*.jpg   binary
+*.gz    binary
+*.db    binary

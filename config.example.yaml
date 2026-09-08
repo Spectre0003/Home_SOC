@@ -1,0 +1,109 @@
+# =============================================
+# HOME SOC CONFIGURATION
+# =============================================
+#
+# Copy this file to config.yaml and edit as needed:
+#
+#     cp config.example.yaml config.yaml
+#
+# config.yaml is gitignored. This example file is committed, so the
+# schema stays visible in the repository without exposing host details.
+#
+# Every key is optional — anything you omit falls back to the defaults
+# in homesoc/common/config.py. A config containing only the two or
+# three values you actually want to change is valid.
+# =============================================
+
+
+# ---------------------------------------------
+# PATHS
+# ---------------------------------------------
+# {home} and {logs} may be referenced by other path entries.
+# ~ is expanded. Relative paths resolve against the working directory.
+
+paths:
+  home: ~/homesoc
+  logs: "{home}/logs"
+  dashboard: "{home}/dashboard.html"
+
+
+# ---------------------------------------------
+# COLLECTION
+# ---------------------------------------------
+
+collection:
+
+  linux:
+    auth_log: /var/log/auth.log
+    collect_journal: true
+
+  windows:
+    # Filled in at Stage 2, when collection becomes a SOC-initiated
+    # pull. Left here now so the config schema does not change shape.
+    host: null
+
+    event_ids: [4624, 4625, 4672]
+    max_events: 500
+
+    # Prefer an IANA name over a fixed offset — an offset cannot
+    # follow daylight saving changes, and silently skews correlation
+    # by an hour when the endpoint's clock shifts and yours does not.
+    #   IANA:  Asia/Kolkata
+    #   Fixed: "+05:30"
+    timezone: Asia/Kolkata
+
+
+# ---------------------------------------------
+# DETECTION THRESHOLDS
+# ---------------------------------------------
+# These replace the hardcoded 5 / 5 / 5 / 3 in the v1.0 analyzers.
+# They become per-rule settings in Stage 4; until then they are global.
+
+detection:
+
+  linux:
+    failed_login_threshold: 5
+    bruteforce_per_ip_threshold: 5
+
+  windows:
+    failed_login_threshold: 5
+    failed_per_account_threshold: 3
+
+
+# ---------------------------------------------
+# CORRELATION
+# ---------------------------------------------
+
+correlation:
+  window_minutes: 5
+  min_failures: 3
+
+
+# ---------------------------------------------
+# RESPONSE
+# ---------------------------------------------
+# Which incident severities produce a simulated response action.
+# Widen to [CRITICAL, HIGH] to include uncorrelated brute force.
+# All actions remain log-only; nothing is enforced.
+
+response:
+  severities: [CRITICAL]
+  action_type: block_ip
+
+
+# ---------------------------------------------
+# REPORTING
+# ---------------------------------------------
+
+reporting:
+  recent_limit: 10
+
+
+# ---------------------------------------------
+# LOGGING
+# ---------------------------------------------
+
+logging:
+  level: INFO
+  to_file: true
+  filename: homesoc.log
