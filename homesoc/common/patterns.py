@@ -168,6 +168,31 @@ def parse_linux_timestamp(
     return None
 
 
+def linux_hostname(line: str) -> Optional[str]:
+    """
+    Hostname field from a syslog-style auth.log line.
+
+    Both timestamp formats are followed by the same shape:
+    ``<hostname> <process>[pid]: message``. Returns None if the line has
+    no recognisable leading timestamp — a continuation line, or
+    something that is not a syslog line at all.
+    """
+
+    if not line:
+        return None
+
+    match = LINUX_TS_RFC3339.search(line) or LINUX_TS_SYSLOG.search(line)
+
+    if not match:
+        return None
+
+    remainder = line[match.end():].lstrip()
+
+    token = remainder.split(None, 1)
+
+    return token[0] if token else None
+
+
 # =============================================
 # SUDO
 # =============================================
