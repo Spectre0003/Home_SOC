@@ -1,13 +1,19 @@
 """
 Windows Security log analysis.
 
-Port of ``analyze_windows_logs.py``. Event handling (4624, 4625, 4672),
-thresholds, and alert wording are unchanged.
+Rewired for Stage 2 pass 2d to consume normalized Events from
+``homesoc.parse.windows``, which reads named ``EventData`` fields
+instead of rendered message text. See that module for why this is the
+actual fix for the account-anchoring bug (roadmap defect D12) rather
+than a better-anchored version of the same approach — the
+event-ID-dependent anchoring function this module used to call doesn't
+exist any more. There's nothing left to anchor to.
 
-The account extractor that was fixed during Phase 14 now lives in
-``homesoc.common.patterns`` and is shared with the correlation stage.
-That duplication is the reason the bug could be fixed in one file and
-not the other; there is now one implementation to get wrong.
+Cross-run collection overlap for Windows (D10) is not addressed here.
+That's a property of the *collector* pulling an overlapping range of
+events on every run, fixed in pass 2e once it becomes incremental. This
+module still only analyzes the single most recent ``windows_*.log``,
+matching v1.0.
 """
 
 from __future__ import annotations
@@ -15,9 +21,10 @@ from __future__ import annotations
 from collections import Counter
 from typing import List, NamedTuple
 
-from homesoc.common import patterns, store
+from homesoc.common import store
 from homesoc.common.log import get_logger
 from homesoc.detect import events
+from homesoc.parse import windows as windows_parser
 
 logger = get_logger(__name__)
 
@@ -51,70 +58,45 @@ def analyze(config) -> WindowsResult:
 
     logger.info("Analyzing %s", logfile.name)
 
-    content = events.read_text(logfile)
+    text = events.read_text(logfile)
 
-    successful_logins = 0
-    failed_logins = 0
-    privileged_logins = 0
+    parsed = windows_parser.parse_windows_security(text)
+
+    failed = [event for event in parsed if event.is_failure]
+
+    succeeded = [event for event in parsed if event.is_success]
+
+    # Not modelled as an Event — see homesoc.parse.windows. A raw count
+    # over the same text, for the same informational purpose v1.0 used
+    # it for.
+
+    privileged_logins = windows_parser.count_privileged_logons(text)
 
     failed_by_account: Counter = Counter()
 
-    unparsed = 0
+    for event in failed:
 
-    for event in events_in(content):
-
-        event_id = patterns.windows_event_id(event)
-
-        if not event_id:
-            unparsed += 1
-            continue
-
-        if event_id == patterns.EVENT_SUCCESSFUL_LOGON:
-
-            successful_logins += 1
-
-            logger.debug(
-                "4624 account=%s ip=%s",
-                patterns.windows_account(event, event_id),
-                patterns.windows_source_ip(event),
-            )
-
-        elif event_id == patterns.EVENT_FAILED_LOGON:
-
-            failed_logins += 1
-
-            account = patterns.windows_account(event, event_id)
-
-            logger.debug(
-                "4625 account=%s ip=%s",
-                account,
-                patterns.windows_source_ip(event),
-            )
-
-            if account:
-                failed_by_account[account] += 1
-
-        elif event_id == patterns.EVENT_SPECIAL_PRIVILEGES:
-
-            privileged_logins += 1
-
-            logger.debug(
-                "4672 account=%s",
-                patterns.windows_account(event, event_id),
-            )
+        if event.known_user:
+            failed_by_account[event.user.name] += 1
 
     # -----------------------------------------
     # Findings
     # -----------------------------------------
 
-    logger.info("Successful logins:    %d", successful_logins)
-    logger.info("Failed logins:        %d", failed_logins)
+    logger.info("Successful logins:    %d", len(succeeded))
+    logger.info("Failed logins:        %d", len(failed))
     logger.info("Privileged logons:    %d", privileged_logins)
 
-    if unparsed:
-        logger.warning(
-            "%d event block(s) had no readable EventID and were skipped",
-            unparsed,
+    for event in failed + succeeded:
+
+        logger.debug(
+            "account=%s ip=%s logon_type=%s outcome=%s status=%s/%s",
+            event.user.name,
+            event.source.ip,
+            event.logon_type,
+            event.event.outcome,
+            event.status,
+            event.sub_status,
         )
 
     for account, count in failed_by_account.most_common():
@@ -134,11 +116,11 @@ def analyze(config) -> WindowsResult:
 
     # Rule 1 — multiple failed logins overall
 
-    if failed_logins >= failed_threshold:
+    if len(failed) >= failed_threshold:
 
         alerts.append(
             f"Multiple Windows failed login attempts detected "
-            f"({failed_logins} attempts)."
+            f"({len(failed)} attempts)."
         )
 
     # Rule 2 — repeated failures against one account
@@ -154,10 +136,10 @@ def analyze(config) -> WindowsResult:
 
     # Rules 3 and 4 were informational in v1.0 and wrote no alert.
 
-    if successful_logins:
+    if succeeded:
         logger.debug(
             "Successful Windows login activity detected (%d events)",
-            successful_logins,
+            len(succeeded),
         )
 
     if privileged_logins:
@@ -181,17 +163,10 @@ def analyze(config) -> WindowsResult:
         logger.info("No Windows alerts generated")
 
     return WindowsResult(
-        successful_logins=successful_logins,
-        failed_logins=failed_logins,
+        successful_logins=len(succeeded),
+        failed_logins=len(failed),
         privileged_logins=privileged_logins,
         failed_by_account=failed_by_account,
         alerts=alerts,
         analyzed_file=logfile.name,
     )
-
-
-def events_in(content: str):
-    """Yield event blocks from a collected Windows log."""
-
-    for event in patterns.split_windows_events(content):
-        yield event

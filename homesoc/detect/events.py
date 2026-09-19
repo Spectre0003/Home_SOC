@@ -1,76 +1,29 @@
 """
-Authentication events and log discovery.
+Log discovery and cross-file deduplication.
 
-A small shared record for the correlation stage, plus the log-file
-selection logic that ``analyze_windows_logs.py`` and
-``correlate_events.py`` each implemented separately.
+``AuthEvent``, the lightweight stopgap record this module carried
+through Stage 1, is retired here. It existed only because the real
+event schema (``homesoc.parse.event.Event``) didn't exist yet — that
+was flagged when it was written. Every detector now consumes ``Event``
+directly, so the stopgap has nothing left to do.
 
-This is *not* the normalized event schema from Stage 2. It carries only
-the four fields v1.0's correlation actually used. Building the full ECS
-record here would mean designing it before the parser layer that
-produces it, and rewriting both.
+What remains is genuinely still needed by every detector: finding the
+right log files, reading them tolerantly, and — new in this pass —
+collapsing the duplication that collection creates.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
-from typing import List, NamedTuple, Optional
+from typing import List, Optional
 
 from homesoc.common.log import get_logger
 
 logger = get_logger(__name__)
 
 
-# v1.0 used the string "unknown" for absent IPs and accounts, and the
-# correlation matching, fingerprinting, and alert text all depend on
-# that exact value. Keeping it means correlation state written by v1.0
-# still matches after the refactor. Stage 3 moves to real nulls in the
-# database, where a missing value and a value of "unknown" are properly
-# distinguishable.
-
-UNKNOWN = "unknown"
-
-
-class AuthEvent(NamedTuple):
-    """One authentication event, successful or failed."""
-
-    timestamp: datetime
-    source_ip: str
-    account: str
-    platform: str
-    outcome: str
-
-    @property
-    def known_ip(self) -> bool:
-        return self.source_ip != UNKNOWN
-
-    @property
-    def known_account(self) -> bool:
-        return self.account != UNKNOWN
-
-
-def normalize(value: Optional[str]) -> str:
-    """Map a missing value onto the v1.0 sentinel."""
-
-    if value is None:
-        return UNKNOWN
-
-    value = value.strip()
-
-    return value if value and value != "-" else UNKNOWN
-
-
 def find_linux_logs(config) -> List[Path]:
-    """
-    Every collected Linux auth log, oldest first.
-
-    Note: because collection copies the whole auth.log each run, these
-    files overlap heavily, and an event present in five of them is
-    counted five times (roadmap defect D1). Preserved from v1.0 so that
-    detection counts stay comparable until Stage 2 introduces
-    content-addressed event IDs.
-    """
+    """Every collected Linux auth log, oldest first."""
 
     logs = sorted(config.log_dir.glob("auth_*.log"))
 
@@ -85,9 +38,12 @@ def find_latest_windows_log(config) -> Optional[Path]:
     The most recently collected Windows log.
 
     Only the newest file is analyzed, matching v1.0. Older Windows logs
-    are never reprocessed once a newer one exists, so events collected
-    but not yet analyzed are lost if two collections happen between two
-    analysis runs. Fixed in Stage 8 when collection becomes incremental.
+    are never reprocessed once a newer one exists. This is a separate
+    problem from the one this module's deduplication solves below —
+    it's about collection pulling an overlapping *range* of events
+    across runs (roadmap defect D10), fixed in pass 2e once the
+    collector itself becomes incremental, not about multiple files on
+    disk.
     """
 
     logs = sorted(config.log_dir.glob("windows_*.log"))
@@ -120,3 +76,63 @@ def read_text(path: Path) -> str:
     except OSError as error:
         logger.error("Could not read %s: %s", path, error)
         return ""
+
+
+def gather_linux_text(config) -> str:
+    """
+    Combined, line-deduplicated text of every currently collected Linux
+    auth log.
+
+    Collection copies the whole auth.log on every run, and nothing
+    rotates old copies away yet (there is no retention policy — that's
+    Stage 3). Every retained ``auth_*.log`` therefore overlaps heavily
+    with every other one: a single real failed login can exist,
+    identically, in a dozen files.
+
+    This is the actual fix for roadmap defect D1. It works on exact
+    line content, not event IDs — there's no need to parse a line
+    before knowing whether it's a duplicate, and an identical line
+    means an identical event by construction (the same content-address
+    hashing ``Event`` uses). Deduplicating here, once, before anything
+    downstream counts or parses a single thing, means the fix applies
+    uniformly to Event-based counts and to the informational raw-line
+    counts (sudo command execution) alike.
+
+    Order is preserved for whichever copy a line is first seen in,
+    which does not have to be chronological — collection files are
+    processed oldest-collected first, but a line's position within one
+    file still reflects when auth.log itself wrote it.
+    """
+
+    seen = set()
+
+    lines: List[str] = []
+
+    total_read = 0
+
+    for logfile in find_linux_logs(config):
+
+        for line in read_text(logfile).splitlines():
+
+            stripped = line.strip()
+
+            if not stripped:
+                continue
+
+            total_read += 1
+
+            if stripped in seen:
+                continue
+
+            seen.add(stripped)
+            lines.append(stripped)
+
+    if total_read:
+        logger.debug(
+            "%d line(s) read across all collected auth logs, "
+            "%d unique after deduplication",
+            total_read,
+            len(lines),
+        )
+
+    return "\n".join(lines)

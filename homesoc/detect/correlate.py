@@ -1,40 +1,56 @@
 """
-Cross-event authentication correlation.
+Cross-platform authentication correlation.
 
-Port of ``correlate_events.py``. The rule is unchanged: N or more failed
-authentications followed by a success, within a time window, from the
-same source and against the same account, raises a correlated attack
+Rewired for Stage 2 pass 2d to consume normalized Events instead of
+scanning raw lines with its own regexes. The rule is unchanged: N or
+more failed authentications followed by a success, within a time
+window, from the same source and account, raises a correlated attack
 alert.
 
-Fingerprints are computed exactly as v1.0 computed them — same field
-order, same separator, same ``unknown`` sentinel — so correlation state
-written before the refactor still suppresses the same correlations
-afterwards. This is the reason ``events.UNKNOWN`` exists rather than
-plain ``None``.
+Two things actually change behaviour, both deliberate:
 
-Two known weaknesses are preserved rather than fixed here, both because
-fixing them changes what fires and there is nothing to verify against
-until Stage 5 has tests:
+Fingerprints are rebuilt from event_id rather than from hand-formatted
+``ip|account|timestamp|count`` strings. Event now carries a real
+content-addressed identity — leaning on it is simpler and more robust
+than reconstructing one, and it removes the need for the "unknown"
+sentinel string the old scheme depended on to stay stable. The
+consequence: fingerprints computed under the old scheme (whatever is
+currently in correlation_state.txt) will not match new ones for the
+same underlying attack. Any correlation still present in the retained
+logs re-alerts once, on the first run after this lands, then suppresses
+correctly on every run after that. This is an unavoidable, one-time
+cost of the state having been built on data that D1/D2 were inflating
+in the first place — not a new bug.
 
-  * The fingerprint includes the match count, so the same attack
-    re-alerts when a later run counts one more failure — which happens
-    routinely, because collection re-copies the whole auth log
-    (defects D1 and D2).
-  * Matching is O(failures x successes) with no time index. Fine at lab
-    volume, quadratic past it (defect D11).
+Both platforms' input now comes pre-deduplicated: Linux via
+``homesoc.detect.events.gather_linux_text``, which collapses duplicate
+lines across every overlapping ``auth_*.log`` before parsing (roadmap
+defect D1). That is what makes the match count behind each fingerprint
+stable run to run, which is what actually fixes D2 — D2 was a symptom
+of D1's inflation, not a separate bug with its own fix.
 """
 
 from __future__ import annotations
 
 import hashlib
+from datetime import timedelta
 from typing import List, NamedTuple
 
-from homesoc.common import patterns, store
+from homesoc.common import store
 from homesoc.common.log import get_logger
 from homesoc.detect import events
-from homesoc.detect.events import UNKNOWN, AuthEvent
+from homesoc.parse import linux as linux_parser
+from homesoc.parse import windows as windows_parser
+from homesoc.parse.event import ACTION_SSH_LOGIN, ACTION_WINDOWS_LOGON, Event
 
 logger = get_logger(__name__)
+
+
+# Sudo events don't participate here, matching v1.0: this correlation
+# is specifically "repeated remote authentication failures followed by
+# a success", not privilege escalation on a box already reached.
+
+_CORRELATABLE_ACTIONS = (ACTION_SSH_LOGIN, ACTION_WINDOWS_LOGON)
 
 
 class CorrelationResult(NamedTuple):
@@ -51,129 +67,34 @@ class CorrelationResult(NamedTuple):
 # =============================================
 
 
-def gather_linux_events(config) -> List[AuthEvent]:
-    """Authentication events from every collected Linux auth log."""
+def gather_events(config) -> List[Event]:
+    """
+    Every correlatable authentication event across both platforms.
 
-    gathered: List[AuthEvent] = []
+    Linux input is already deduplicated by
+    ``events.gather_linux_text``. Windows only ever reads the single
+    newest collected file (see ``events.find_latest_windows_log``), so
+    it has no equivalent cross-file duplication yet — that's a
+    property of the collector, addressed in pass 2e.
+    """
 
-    for logfile in events.find_linux_logs(config):
+    linux_text = events.gather_linux_text(config)
 
-        logger.debug("Reading %s", logfile.name)
+    linux_events = linux_parser.parse_auth_log(linux_text)
 
-        for line in events.read_text(logfile).splitlines():
+    windows_log = events.find_latest_windows_log(config)
 
-            line = line.strip()
+    windows_events = (
+        windows_parser.parse_windows_security(events.read_text(windows_log))
+        if windows_log is not None
+        else []
+    )
 
-            if not line:
-                continue
-
-            is_failure = "Failed password" in line
-
-            is_success = (
-                "Accepted password" in line or "Accepted publickey" in line
-            )
-
-            if not (is_failure or is_success):
-                continue
-
-            timestamp = patterns.parse_linux_timestamp(line)
-
-            if timestamp is None:
-
-                # v1.0 required an RFC3339 timestamp and silently
-                # discarded anything else. The parser now handles
-                # traditional syslog too, so reaching here means the
-                # line genuinely has no timestamp.
-
-                logger.debug("No timestamp, skipping: %s", line[:80])
-                continue
-
-            pattern = (
-                patterns.LINUX_FAILED_PASSWORD
-                if is_failure
-                else patterns.LINUX_ACCEPTED
-            )
-
-            match = pattern.search(line)
-
-            source_ip = events.normalize(
-                match.group("ip") if match else None
-            )
-
-            account = events.normalize(
-                match.group("account") if match else None
-            )
-
-            gathered.append(
-                AuthEvent(
-                    timestamp=timestamp,
-                    source_ip=source_ip,
-                    account=account,
-                    platform="Linux",
-                    outcome="failure" if is_failure else "success",
-                )
-            )
-
-    return gathered
-
-
-def gather_windows_events(config) -> List[AuthEvent]:
-    """Authentication events from the most recent Windows log."""
-
-    logfile = events.find_latest_windows_log(config)
-
-    if logfile is None:
-        return []
-
-    logger.debug("Reading %s", logfile.name)
-
-    tzinfo = config.windows_timezone
-
-    gathered: List[AuthEvent] = []
-
-    for event in patterns.split_windows_events(events.read_text(logfile)):
-
-        event_id = patterns.windows_event_id(event)
-
-        if event_id not in (
-            patterns.EVENT_SUCCESSFUL_LOGON,
-            patterns.EVENT_FAILED_LOGON,
-        ):
-            continue
-
-        timestamp = patterns.parse_windows_timestamp(event, tzinfo)
-
-        if timestamp is None:
-
-            # v1.0 caught ValueError and continued, so a locale change
-            # on the endpoint silently emptied the Windows side of
-            # correlation. Several formats are tried now, and reaching
-            # here is worth reporting.
-
-            logger.warning(
-                "Unrecognised Windows timestamp format, event skipped"
-            )
-            continue
-
-        gathered.append(
-            AuthEvent(
-                timestamp=timestamp,
-                source_ip=events.normalize(
-                    patterns.windows_source_ip(event)
-                ),
-                account=events.normalize(
-                    patterns.windows_account(event, event_id)
-                ),
-                platform="Windows",
-                outcome=(
-                    "failure"
-                    if event_id == patterns.EVENT_FAILED_LOGON
-                    else "success"
-                ),
-            )
-        )
-
-    return gathered
+    return [
+        event
+        for event in linux_events + windows_events
+        if event.event.action in _CORRELATABLE_ACTIONS
+    ]
 
 
 # =============================================
@@ -181,14 +102,15 @@ def gather_windows_events(config) -> List[AuthEvent]:
 # =============================================
 
 
-def matches(success: AuthEvent, failure: AuthEvent, window) -> bool:
+def matches(success: Event, failure: Event, window: timedelta) -> bool:
     """
     Whether *failure* belongs to the run leading up to *success*.
 
     A field only has to agree when it is known on both sides — an event
-    with no source IP is not excluded from correlating with one that has
-    it. That is v1.0's behaviour, and it is what lets a Windows 4625
-    with no network address correlate with a subsequent 4624.
+    with no source IP is not excluded from correlating with one that
+    has it. That is v1.0's behaviour, carried through unchanged; it is
+    what lets a Windows 4625 with no network address correlate with a
+    subsequent 4624.
     """
 
     if failure.timestamp >= success.timestamp:
@@ -198,38 +120,34 @@ def matches(success: AuthEvent, failure: AuthEvent, window) -> bool:
         return False
 
     if (
-        success.known_ip
-        and failure.known_ip
-        and success.source_ip != failure.source_ip
+        success.known_source_ip
+        and failure.known_source_ip
+        and success.source.ip != failure.source.ip
     ):
         return False
 
     if (
-        success.known_account
-        and failure.known_account
-        and success.account != failure.account
+        success.known_user
+        and failure.known_user
+        and success.user.name != failure.user.name
     ):
         return False
 
     return True
 
 
-def fingerprint(success: AuthEvent, matching: List[AuthEvent]) -> str:
+def fingerprint(success: Event, matching: List[Event]) -> str:
     """
     Stable identifier for one correlation.
 
-    Field order and formatting are load-bearing: they must match v1.0
-    exactly or every previously-seen correlation re-alerts on the first
-    run after upgrading.
+    Built from the endpoints' own content-addressed event IDs rather
+    than a hand-formatted string of fields. This is stable across runs
+    precisely because the input feeding it is now deduplicated — the
+    same real attack produces the same success event, the same first
+    failure, and the same last failure every time it's evaluated.
     """
 
-    data = (
-        f"{success.source_ip}|"
-        f"{success.account}|"
-        f"{matching[0].timestamp.isoformat()}|"
-        f"{matching[-1].timestamp.isoformat()}|"
-        f"{len(matching)}"
-    )
+    data = f"{success.event_id}|{matching[0].event_id}|{matching[-1].event_id}"
 
     return hashlib.sha256(data.encode()).hexdigest()
 
@@ -242,15 +160,15 @@ def fingerprint(success: AuthEvent, matching: List[AuthEvent]) -> str:
 def correlate(config) -> CorrelationResult:
     """Correlate authentication events and append any new alerts."""
 
-    gathered = gather_linux_events(config) + gather_windows_events(config)
+    gathered = gather_events(config)
 
     failures = sorted(
-        (event for event in gathered if event.outcome == "failure"),
+        (event for event in gathered if event.is_failure),
         key=lambda event: event.timestamp,
     )
 
     successes = sorted(
-        (event for event in gathered if event.outcome == "success"),
+        (event for event in gathered if event.is_success),
         key=lambda event: event.timestamp,
     )
 
@@ -290,8 +208,8 @@ def correlate(config) -> CorrelationResult:
             f"Authentication attack pattern detected: "
             f"{len(matching)} failed login attempts "
             f"followed by a successful login "
-            f"for account {success.account} "
-            f"from {success.source_ip}."
+            f"for account {success.user.name or 'unknown'} "
+            f"from {success.source.ip or 'unknown'}."
         )
 
         logger.warning("ALERT %s", alert)

@@ -1,15 +1,20 @@
 """
 Linux authentication log analysis.
 
-Port of ``analyze_linux_logs.py``. Detection rules, thresholds, and alert
-wording are unchanged — thresholds now come from config rather than
-being literals, but the defaults reproduce v1.0 exactly.
+Rewired for Stage 2 pass 2d to consume normalized Events from
+``homesoc.parse.linux`` instead of scanning raw lines itself. The
+regex matching this module carried since Stage 1 — its own copy of
+"what does a failed login line look like" — is gone; the parser is now
+the only place that decides that.
 
-The one visible difference is output volume. v1.0 printed every matched
-line in full: with a Hydra run in the log that is thousands of lines of
-console output burying the alerts at the end. Those lines are now DEBUG,
-so ``homesoc analyze`` shows findings and ``homesoc -v analyze`` shows
-the evidence.
+The other change is what actually fixes roadmap defect D1 in the
+running pipeline rather than just demonstrating the fix in isolation:
+``homesoc.detect.events.gather_linux_text()`` deduplicates identical
+lines across every currently-collected ``auth_*.log`` before this
+module counts a single thing. A failed login sitting in five
+overlapping collection copies is counted once, not five times.
+
+Thresholds and alert wording are unchanged from v1.0.
 """
 
 from __future__ import annotations
@@ -17,9 +22,11 @@ from __future__ import annotations
 from collections import Counter
 from typing import List, NamedTuple
 
-from homesoc.common import patterns, store
+from homesoc.common import store
 from homesoc.common.log import get_logger
 from homesoc.detect import events
+from homesoc.parse import linux as linux_parser
+from homesoc.parse.event import ACTION_SSH_LOGIN, ACTION_SUDO_AUTH
 
 logger = get_logger(__name__)
 
@@ -41,87 +48,54 @@ def analyze(config) -> LinuxResult:
 
     logfiles = events.find_linux_logs(config)
 
-    failed_logins = 0
-    successful_logins = 0
-    sudo_commands = 0
-    sudo_failures = 0
+    text = events.gather_linux_text(config)
+
+    parsed = linux_parser.parse_auth_log(text)
+
+    failed = [
+        event for event in parsed
+        if event.event.action == ACTION_SSH_LOGIN and event.is_failure
+    ]
+
+    succeeded = [
+        event for event in parsed
+        if event.event.action == ACTION_SSH_LOGIN and event.is_success
+    ]
+
+    sudo_failures = [
+        event for event in parsed
+        if event.event.action == ACTION_SUDO_AUTH
+    ]
+
+    # count_sudo_commands operates on the same deduplicated text, so
+    # informational counts benefit from the D1 fix too, even though
+    # sudo command execution isn't modelled as an Event (see
+    # homesoc.parse.linux for why).
+
+    sudo_commands = linux_parser.count_sudo_commands(text)
 
     failed_by_ip: Counter = Counter()
 
-    for logfile in logfiles:
+    for event in failed:
 
-        logger.debug("Reading %s", logfile.name)
-
-        content = events.read_text(logfile)
-
-        for line in content.splitlines():
-
-            line = line.strip()
-
-            if not line:
-                continue
-
-            # ---------------------------------
-            # SSH authentication
-            # ---------------------------------
-
-            if "Failed password" in line:
-
-                failed_logins += 1
-
-                logger.debug("FAILED  %s", line)
-
-                match = patterns.LINUX_FAILED_PASSWORD.search(line)
-
-                if match and match.group("ip"):
-
-                    ip = match.group("ip")
-
-                    # The IP group is greedy about what follows "from";
-                    # validate it before counting it as an address.
-
-                    if patterns.IPV4.fullmatch(ip):
-                        failed_by_ip[ip] += 1
-
-            elif (
-                "Accepted password" in line
-                or "Accepted publickey" in line
-            ):
-
-                successful_logins += 1
-
-                logger.debug("SUCCESS %s", line)
-
-            # ---------------------------------
-            # sudo
-            # ---------------------------------
-
-            if patterns.is_sudo_line(line):
-
-                if patterns.is_sudo_failure(line):
-
-                    sudo_failures += 1
-
-                    logger.debug("SUDO-FAIL %s", line)
-
-                elif patterns.is_sudo_command(line):
-
-                    sudo_commands += 1
-
-                    logger.debug("SUDO-CMD  %s", line)
+        if event.known_source_ip:
+            failed_by_ip[event.source.ip] += 1
 
     # -----------------------------------------
     # Findings
     # -----------------------------------------
 
     logger.info("Read %d Linux log file(s)", len(logfiles))
-    logger.info("Failed logins:        %d", failed_logins)
-    logger.info("Successful logins:    %d", successful_logins)
+    logger.info("Failed logins:        %d", len(failed))
+    logger.info("Successful logins:    %d", len(succeeded))
     logger.info("Sudo commands:        %d", sudo_commands)
-    logger.info("Sudo auth failures:   %d", sudo_failures)
+    logger.info("Sudo auth failures:   %d", len(sudo_failures))
 
     for ip, count in failed_by_ip.most_common():
         logger.info("  %s: %d failed attempt(s)", ip, count)
+
+    for event in failed + succeeded + sudo_failures:
+        logger.debug("%s", event.raw)
 
     # -----------------------------------------
     # Detection rules
@@ -135,7 +109,7 @@ def analyze(config) -> LinuxResult:
 
     # Rule 1 — multiple failed logins overall
 
-    if failed_logins >= failed_threshold:
+    if len(failed) >= failed_threshold:
 
         alerts.append("Multiple failed login attempts detected.")
 
@@ -152,13 +126,13 @@ def analyze(config) -> LinuxResult:
 
     # Rule 3 — sudo authentication failure
 
-    if sudo_failures > 0:
+    if sudo_failures:
 
         alerts.append("Sudo authentication failure detected.")
 
     # Rules 4 and 5 were informational in v1.0 and wrote no alert.
 
-    if successful_logins:
+    if succeeded:
         logger.debug("Successful SSH/login activity detected.")
 
     if sudo_commands:
@@ -177,10 +151,10 @@ def analyze(config) -> LinuxResult:
         logger.info("No Linux alerts generated")
 
     return LinuxResult(
-        failed_logins=failed_logins,
-        successful_logins=successful_logins,
+        failed_logins=len(failed),
+        successful_logins=len(succeeded),
         sudo_commands=sudo_commands,
-        sudo_failures=sudo_failures,
+        sudo_failures=len(sudo_failures),
         failed_by_ip=failed_by_ip,
         alerts=alerts,
         files_read=len(logfiles),
