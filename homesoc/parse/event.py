@@ -131,6 +131,8 @@ class Event:
     source: SourceInfo = field(default_factory=SourceInfo)
     host: Optional[str] = None
     logon_type: Optional[int] = None
+    status: Optional[str] = None
+    sub_status: Optional[str] = None
     raw: str = ""
 
     # -----------------------------------------
@@ -151,6 +153,8 @@ class Event:
         source_ip: Optional[str] = None,
         host: Optional[str] = None,
         logon_type: Optional[int] = None,
+        status: Optional[str] = None,
+        sub_status: Optional[str] = None,
     ) -> "Event":
         """
         Build a new event from parsed fields.
@@ -160,6 +164,13 @@ class Event:
         silently treating an unlabelled time as UTC is exactly the kind
         of bug that only shows up once an event crosses a timezone
         boundary — which is what happened to the Windows side in v1.0.
+
+        *status* and *sub_status* are the raw Windows failure codes
+        (e.g. ``"0xC000006A"``) on a 4625 event — left as opaque strings
+        rather than decoded to a human label here. A wrong-password
+        code and a no-such-account code are the difference between a
+        password spray and username enumeration, which is worth
+        capturing now even though nothing reads it until later.
         """
 
         if timestamp.tzinfo is None:
@@ -178,6 +189,8 @@ class Event:
             source=SourceInfo(ip=source_ip),
             host=host,
             logon_type=logon_type,
+            status=status,
+            sub_status=sub_status,
             raw=raw,
         )
 
@@ -221,6 +234,8 @@ class Event:
             "user": {"name": self.user.name},
             "source": {"ip": self.source.ip},
             "logon_type": self.logon_type,
+            "status": self.status,
+            "sub_status": self.sub_status,
             "raw": self.raw,
         }
 
@@ -248,6 +263,8 @@ class Event:
             source=SourceInfo(ip=source_data.get("ip")),
             host=data.get("host"),
             logon_type=data.get("logon_type"),
+            status=data.get("status"),
+            sub_status=data.get("sub_status"),
             raw=data.get("raw", ""),
         )
 
