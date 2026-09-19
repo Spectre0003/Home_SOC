@@ -214,156 +214,18 @@ def is_sudo_command(line: str) -> bool:
     return is_sudo_line(line) and SUDO_COMMAND in line
 
 
+
 # =============================================
 # WINDOWS SECURITY EVENTS
 # =============================================
-
-WINDOWS_EVENT_SPLIT = re.compile(r"\n(?=TimeCreated\s*:)")
-
-WINDOWS_EVENT_ID = re.compile(r"EventID\s*:\s*(?P<event_id>\d+)")
-
-WINDOWS_TIME_CREATED = re.compile(r"TimeCreated\s*:\s*(?P<ts>.+)")
-
-WINDOWS_SOURCE_IP = re.compile(
-    r"Source Network Address:\s+(?P<ip>[0-9a-fA-F:.]+)"
-)
-
-# Anchored per event type. A Windows event message contains several
-# "Account Name:" lines — under Subject:, New Logon:, and Account For
-# Which Logon Failed: — and the first is not reliably the meaningful
-# one. Taking the first match is the Phase 14 bug; these anchors are the
-# fix, kept in exactly one place this time.
-
-WINDOWS_ACCOUNT_NEW_LOGON = re.compile(
-    r"New Logon:.*?Account Name:\s+(?P<account>[^\r\n]+)", re.DOTALL
-)
-
-WINDOWS_ACCOUNT_LOGON_FAILED = re.compile(
-    r"Account For Which Logon Failed:.*?"
-    r"Account Name:\s+(?P<account>[^\r\n]+)",
-    re.DOTALL,
-)
-
-WINDOWS_ACCOUNT_ANY = re.compile(r"Account Name:\s+(?P<account>[^\r\n]+)")
-
-
-EVENT_SUCCESSFUL_LOGON = "4624"
-EVENT_FAILED_LOGON = "4625"
-EVENT_SPECIAL_PRIVILEGES = "4672"
-
-
-# PowerShell renders TimeCreated according to the endpoint's locale.
-# v1.0 accepted one format; a mismatch silently dropped every event via
-# a bare `except ValueError: continue`. These are tried in order.
-
-WINDOWS_TIME_FORMATS = (
-    "%m/%d/%Y %H:%M:%S",
-    "%m/%d/%Y %I:%M:%S %p",
-    "%d/%m/%Y %H:%M:%S",
-    "%d-%m-%Y %H:%M:%S",
-    "%Y-%m-%d %H:%M:%S",
-)
-
-
-def split_windows_events(content: str) -> List[str]:
-    """Split a collected Windows log into individual event blocks."""
-
-    if not content:
-        return []
-
-    return [
-        block.strip()
-        for block in WINDOWS_EVENT_SPLIT.split(content)
-        if block.strip()
-    ]
-
-
-def windows_event_id(event_text: str) -> Optional[str]:
-    """Event ID of a Windows event block, as a string."""
-
-    match = WINDOWS_EVENT_ID.search(event_text or "")
-
-    return match.group("event_id") if match else None
-
-
-def windows_account(
-    event_text: str, event_id: Optional[str]
-) -> Optional[str]:
-    """
-    Account name for a Windows event, anchored to the correct section.
-
-    4624 reads from ``New Logon:``, 4625 from ``Account For Which Logon
-    Failed:``, and anything else falls back to the first ``Account
-    Name:`` line.
-    """
-
-    if not event_text:
-        return None
-
-    if event_id == EVENT_SUCCESSFUL_LOGON:
-        pattern = WINDOWS_ACCOUNT_NEW_LOGON
-
-    elif event_id == EVENT_FAILED_LOGON:
-        pattern = WINDOWS_ACCOUNT_LOGON_FAILED
-
-    else:
-        pattern = WINDOWS_ACCOUNT_ANY
-
-    match = pattern.search(event_text)
-
-    return match.group("account").strip() if match else None
-
-
-def windows_source_ip(event_text: str) -> Optional[str]:
-    """
-    Source network address of a Windows event.
-
-    v1.0 substituted the string "unknown" when absent. Returning None
-    lets the caller decide, and keeps the placeholder out of stored
-    records where it would be indistinguishable from a real value.
-    """
-
-    match = WINDOWS_SOURCE_IP.search(event_text or "")
-
-    if not match:
-        return None
-
-    value = match.group("ip").strip()
-
-    # Windows writes "-" for local logons with no network source.
-
-    return value if value and value != "-" else None
-
-
-def parse_windows_timestamp(event_text: str, tzinfo) -> Optional[datetime]:
-    """
-    Timestamp of a Windows event block, converted to UTC.
-
-    *tzinfo* is the endpoint's timezone, from
-    ``config.windows_timezone`` — Windows event logs are rendered in
-    local time with no offset attached.
-    """
-
-    match = WINDOWS_TIME_CREATED.search(event_text or "")
-
-    if not match:
-        return None
-
-    raw = match.group("ts").strip()
-
-    for time_format in WINDOWS_TIME_FORMATS:
-
-        try:
-            parsed = datetime.strptime(raw, time_format)
-
-        except ValueError:
-            continue
-
-        return parsed.replace(tzinfo=tzinfo).astimezone(timezone.utc)
-
-    return None
-
-
+#
+# The rendered-text parsing that used to live here (split_windows_events,
+# windows_event_id, windows_account, windows_source_ip,
+# parse_windows_timestamp, and the regexes behind them) is retired as of
+# Stage 2 pass 2e. homesoc.parse.windows reads structured Windows Event
+# XML instead, where TimeCreated is always UTC and TargetUserName means
+# the same thing regardless of event ID — there is nothing left to
+# anchor to or guess at a timezone for. See that module.
 # =============================================
 # ALERT MESSAGE FIELDS
 # =============================================

@@ -252,3 +252,61 @@ def count_alerts(path: Path) -> int:
     """Number of alert lines in the alert log."""
 
     return sum(1 for _ in read_alerts(path))
+
+
+# =============================================
+# WATERMARKS
+# =============================================
+#
+# A watermark is "the highest record ID collected so far", persisted
+# per source so an incremental collector — homesoc.collect.windows, and
+# any future one — can ask for only what's new since last time.
+#
+# Stored as a small JSON object keyed by source (a hostname, normally)
+# rather than one value per file, so a second monitored endpoint later
+# doesn't need a schema change — just a new key in the same file.
+# =============================================
+
+
+def _read_json_object(path: Path) -> dict:
+
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+
+    except FileNotFoundError:
+        return {}
+
+    except (json.JSONDecodeError, OSError) as error:
+        logger.warning("Could not read %s, treating as empty: %s", path, error)
+        return {}
+
+    return data if isinstance(data, dict) else {}
+
+
+def read_watermark(path: Path, key: str) -> Optional[int]:
+    """
+    The stored watermark for *key* (normally a hostname), or None.
+
+    None means "no prior watermark" — either this source has never
+    been collected before, or the file is missing or unreadable. Both
+    are treated identically: the caller should bootstrap rather than
+    assume anything about what's already been seen.
+    """
+
+    value = _read_json_object(path).get(key)
+
+    return value if isinstance(value, int) else None
+
+
+def write_watermark(path: Path, key: str, record_id: int) -> None:
+    """Persist the watermark for *key*, leaving any other keys intact."""
+
+    data = _read_json_object(path)
+
+    data[key] = int(record_id)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(data, handle)

@@ -133,6 +133,23 @@ def cmd_collect(config, args) -> int:
 
     collected = linux.collect(config)
 
+    # Windows collection's success/failure doesn't drive this command's
+    # exit code yet. "No new events since last time" is now a normal,
+    # frequent outcome of incremental collection (pass 2e) rather than
+    # something worth flagging — and it returns the same None a real
+    # connection failure does, distinguished only by log level. Giving
+    # the exit code a more precise opinion is Stage 8's job, once
+    # pipeline health monitoring exists to act on the distinction.
+
+    if config.windows_host:
+
+        from homesoc.collect import windows
+
+        windows_file = windows.collect(config)
+
+        if windows_file:
+            collected.append(windows_file)
+
     return EXIT_OK if collected else EXIT_FAILED
 
 

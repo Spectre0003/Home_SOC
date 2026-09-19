@@ -27,11 +27,6 @@ from typing import Any, Optional
 
 import yaml
 
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:  # Python < 3.9, or tzdata not installed
-    ZoneInfo = None
-
 
 # =============================================
 # ERRORS
@@ -64,14 +59,23 @@ DEFAULTS: dict = {
             "collect_journal": True,
         },
         "windows": {
-            # Populated in Stage 2 when collection is inverted to a pull.
-            # Kept here now so the schema does not change shape later.
+            # Populated in Stage 2 pass 2e, which inverts collection to
+            # a pull over WinRM (ADR 0002). Windows Event XML's own
+            # TimeCreated is always UTC, so there is no timezone
+            # setting here any more — Stage 1's config.windows.timezone
+            # existed only because the old rendered-text collector gave
+            # local time with no offset attached.
             "host": None,
+            "username": None,
+            # Never required to live here — HOMESOC_WINRM_PASSWORD is
+            # checked first. This key exists purely as a documented
+            # fallback for a lab where that's more convenient.
+            "password": None,
+            "winrm_port": 5985,
+            "transport": "ntlm",
+            "timeout_seconds": 30,
             "event_ids": [4624, 4625, 4672],
             "max_events": 500,
-            # IANA name ("Asia/Kolkata") or fixed offset ("+05:30").
-            # Prefer the IANA name: it handles DST, an offset does not.
-            "timezone": "+05:30",
         },
     },
     "detection": {
@@ -105,6 +109,14 @@ DEFAULTS: dict = {
 
 VALID_SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}
 VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+
+# pywinrm's supported auth/transport names. "ntlm" is the practical
+# default for a workgroup lab with no domain — Kerberos needs one,
+# "basic" sends credentials with essentially no protection, and
+# "credssp" needs CredSSP enabled on the endpoint for no benefit here.
+VALID_WINRM_TRANSPORTS = {
+    "plaintext", "ssl", "kerberos", "ntlm", "credssp", "basic", "certificate",
+}
 
 
 # =============================================
@@ -179,52 +191,6 @@ def _default_search_paths() -> list:
     return paths
 
 
-def _parse_timezone(value: str):
-    """
-    Accept either a fixed UTC offset ("+05:30", "-08:00", "Z") or an
-    IANA timezone name ("Asia/Kolkata", "UTC").
-    """
-
-    if not isinstance(value, str) or not value.strip():
-        raise ConfigError("collection.windows.timezone must be a string")
-
-    value = value.strip()
-
-    if value in ("Z", "z"):
-        return timezone.utc
-
-    if value[0] in "+-":
-
-        try:
-            sign = 1 if value[0] == "+" else -1
-            hours, _, minutes = value[1:].partition(":")
-            offset = timedelta(
-                hours=int(hours), minutes=int(minutes or 0)
-            )
-
-        except ValueError as exc:
-            raise ConfigError(
-                f"Invalid UTC offset {value!r}; expected a form like '+05:30'"
-            ) from exc
-
-        return timezone(sign * offset)
-
-    if ZoneInfo is None:
-        raise ConfigError(
-            f"Cannot resolve timezone {value!r}: zoneinfo is unavailable. "
-            "Install the 'tzdata' package or use a fixed offset like '+05:30'."
-        )
-
-    try:
-        return ZoneInfo(value)
-
-    except Exception as exc:
-        raise ConfigError(
-            f"Unknown timezone {value!r}. Use an IANA name such as "
-            "'Asia/Kolkata', or a fixed offset such as '+05:30'."
-        ) from exc
-
-
 # =============================================
 # CONFIG
 # =============================================
@@ -251,6 +217,7 @@ class Config:
     CORRELATION_STATE = "correlation_state.txt"
     INCIDENT_STATE = "incident_state.txt"
     RESPONSE_STATE = "response_state.txt"
+    WINDOWS_WATERMARK = "windows_watermark.json"
 
     def __init__(
         self,
@@ -385,6 +352,8 @@ class Config:
             "correlation.window_minutes",
             "correlation.min_failures",
             "collection.windows.max_events",
+            "collection.windows.winrm_port",
+            "collection.windows.timeout_seconds",
             "reporting.recent_limit",
         ]
 
@@ -413,6 +382,22 @@ class Config:
                     f"Valid values: {', '.join(sorted(VALID_SEVERITIES))}"
                 )
 
+        winrm_port = self.get("collection.windows.winrm_port")
+
+        if not (1 <= winrm_port <= 65535):
+            raise ConfigError(
+                f"collection.windows.winrm_port must be a valid port "
+                f"(1-65535), got {winrm_port}"
+            )
+
+        transport = self.get("collection.windows.transport")
+
+        if transport not in VALID_WINRM_TRANSPORTS:
+            raise ConfigError(
+                f"Unknown collection.windows.transport {transport!r}. "
+                f"Valid values: {', '.join(sorted(VALID_WINRM_TRANSPORTS))}"
+            )
+
         level = self.get("logging.level")
 
         if level not in VALID_LOG_LEVELS:
@@ -435,9 +420,6 @@ class Config:
                     f"collection.windows.event_ids entries must be integers, "
                     f"got {event_id!r}"
                 )
-
-        # Raises ConfigError if the timezone string is unusable.
-        self.windows_timezone
 
     # -----------------------------------------
     # Generic access
@@ -507,6 +489,10 @@ class Config:
         return self.log_dir / self.RESPONSE_STATE
 
     @property
+    def windows_watermark_state(self) -> Path:
+        return self.log_dir / self.WINDOWS_WATERMARK
+
+    @property
     def run_log(self) -> Path:
         return self.log_dir / self.get("logging.filename")
 
@@ -515,6 +501,30 @@ class Config:
         return Path(
             self.get("collection.linux.auth_log")
         ).expanduser()
+
+    @property
+    def windows_host(self) -> Optional[str]:
+        return self.get("collection.windows.host")
+
+    @property
+    def windows_winrm_password(self) -> Optional[str]:
+        """
+        The WinRM password, preferring the environment over the file.
+
+        HOMESOC_WINRM_PASSWORD is checked first, so the password never
+        has to live on disk as part of this project's own files at all
+        — config.yaml being gitignored is not the same guarantee as it
+        never touching disk. collection.windows.password exists purely
+        as a documented fallback for a lab where that trade-off is
+        acceptable.
+        """
+
+        env_value = os.environ.get("HOMESOC_WINRM_PASSWORD")
+
+        if env_value:
+            return env_value
+
+        return self.get("collection.windows.password")
 
     def ensure_directories(self) -> None:
         """Create the directories the pipeline writes into."""
@@ -528,10 +538,6 @@ class Config:
     @property
     def correlation_window(self) -> timedelta:
         return timedelta(minutes=self.get("correlation.window_minutes"))
-
-    @property
-    def windows_timezone(self):
-        return _parse_timezone(self.get("collection.windows.timezone"))
 
     @property
     def response_severities(self) -> set:
@@ -584,7 +590,6 @@ if __name__ == "__main__":
 
     print("\n[+] Typed values:")
     print(f"    correlation window: {config.correlation_window}")
-    print(f"    windows timezone:   {config.windows_timezone}")
     print(f"    response severities:{sorted(config.response_severities)}")
 
     print("\n[+] Merged configuration:")
