@@ -127,11 +127,31 @@ $e = Get-WinEvent -LogName '__LOG_NAME__' -MaxEvents 1 -ErrorAction SilentlyCont
 if ($e) { $e.RecordId } else { 0 }
 """
 
+# 0x1E (ASCII Record Separator) rather than a newline. PowerShell's
+# default output formatter word-wraps long strings to whatever console
+# width the (headless, non-interactive) remote session reports —
+# commonly around 80 columns — chopping every multi-hundred-character
+# ToXml() document into several fragments before it ever leaves the
+# Windows box, regardless of which Python library receives it. This
+# was confirmed against a real endpoint: switching the transport
+# library entirely (pywinrm to pypsrp) reproduced the exact same
+# corrupted line count, which only makes sense if the damage happens
+# on the PowerShell side before either library sees the bytes.
+#
+# 0x1E is not a workaround guess — the XML 1.0 Char production
+# explicitly excludes it, so it cannot appear in well-formed event XML
+# and is guaranteed, not just unlikely, not to collide with real
+# content. Reconstruction on the Python side strips whatever incidental
+# newlines the formatter inserted (our content never legitimately
+# contains one) and splits on this delimiter instead of trusting
+# newlines to mean anything during transit.
+_RECORD_SEPARATOR = "\x1e"
+
 _FETCH_SCRIPT = """
 $xpath  = '__XPATH__'
 $events = Get-WinEvent -LogName '__LOG_NAME__' -FilterXPath $xpath -MaxEvents __MAX_EVENTS__ __OLDEST_FLAG__ -ErrorAction SilentlyContinue
 if ($events) {
-    $events | Sort-Object RecordId | ForEach-Object { $_.ToXml() }
+    ($events | Sort-Object RecordId | ForEach-Object { $_.ToXml() }) -join [char]0x1E
 }
 """
 
@@ -146,7 +166,7 @@ def build_fetch_script(
     xpath: str, max_events: int, oldest: bool, log_name: str = LOG_NAME
 ) -> str:
     """
-    Script to fetch matching events, one ``ToXml()`` document per line.
+    Script to fetch matching events as one delimiter-joined string.
 
     *oldest* controls traversal direction, and the choice matters for
     correctness, not just style. Incremental collection (a watermark is
@@ -157,6 +177,11 @@ def build_fetch_script(
     Bootstrap collection (no watermark) wants exactly the opposite: the
     most recent events are the useful starting point, not whatever the
     log happens to have retained from years ago.
+
+    The events are joined with ``-join [char]0x1E`` into a single
+    returned string rather than left as separate pipeline objects — see
+    the module-level comment on ``_RECORD_SEPARATOR`` for why newlines
+    in the returned text can't be trusted to mark event boundaries.
     """
 
     script = _FETCH_SCRIPT
@@ -167,6 +192,26 @@ def build_fetch_script(
     script = script.replace("__OLDEST_FLAG__", "-Oldest" if oldest else "")
 
     return script
+
+
+def reconstruct_events(raw: Optional[str]) -> List[str]:
+    """
+    Recover individual event XML documents from the script's raw output.
+
+    Strips every ``\\r`` and ``\\n`` unconditionally before splitting on
+    the record separator — safe specifically because our own emitted
+    content never legitimately contains a real newline (``ToXml()`` is
+    single-line by construction), so any newline present only exists
+    because PowerShell's formatter inserted it while wrapping the
+    string for a display width nothing is actually using.
+    """
+
+    if not raw:
+        return []
+
+    collapsed = raw.replace("\r", "").replace("\n", "")
+
+    return [chunk for chunk in collapsed.split(_RECORD_SEPARATOR) if chunk.strip()]
 
 
 def parse_record_ids(output: str) -> List[int]:
@@ -346,7 +391,26 @@ def collect(config) -> Optional[Path]:
         logger.info("No new Windows events since the last collection")
         return None
 
-    record_ids = parse_record_ids(output)
+    events_xml = reconstruct_events(output)
+
+    if not events_xml:
+
+        logger.warning(
+            "PowerShell returned output but no event documents could be "
+            "recovered from it after reconstruction — not advancing the "
+            "watermark"
+        )
+        return None
+
+    # Regexing for EventRecordID only after reconstruction — the raw
+    # output may have had a stray formatter-inserted newline landing
+    # inside a short tag like this one; the reconstructed, delimiter-
+    # split text doesn't have that problem, since every fake newline
+    # has already been removed.
+
+    joined = "\n".join(events_xml)
+
+    record_ids = parse_record_ids(joined)
 
     if not record_ids:
 
@@ -364,7 +428,11 @@ def collect(config) -> Optional[Path]:
 
     destination = config.log_dir / f"windows_{suffix}.log"
 
-    destination.write_text(output + "\n", encoding="utf-8")
+    # Written from the reconstructed list, one document per line — the
+    # on-disk contract homesoc.parse.windows expects, restored exactly
+    # regardless of whatever the formatter did to the text in transit.
+
+    destination.write_text(joined + "\n", encoding="utf-8")
 
     # Only advance the watermark once the file is safely on disk — a
     # failure between the PSRP call and this write must not lose
@@ -375,7 +443,7 @@ def collect(config) -> Optional[Path]:
 
     logger.info(
         "Collected %d new Windows event(s) into %s (watermark now %d)",
-        len(output.splitlines()),
+        len(events_xml),
         destination.name,
         new_watermark,
     )

@@ -23,9 +23,25 @@ logger = get_logger(__name__)
 
 
 def find_linux_logs(config) -> List[Path]:
-    """Every collected Linux auth log, oldest first."""
+    """
+    Every collected Linux auth log, oldest first.
 
-    logs = sorted(config.log_dir.glob("auth_*.log"))
+    Matches only this pipeline's own naming convention
+    (``auth_YYYY-MM-DD_HH-MM-SS.log``) rather than a bare ``auth_*.log``
+    wildcard, so an unrelated file that happens to start with ``auth_``
+    can't get pulled into detection. Order doesn't affect correctness
+    here — ``gather_linux_text`` unions every file's lines regardless
+    of which is read first — but a precise pattern costs nothing and
+    closes off the same class of surprise that hit the Windows side
+    below.
+    """
+
+    logs = sorted(
+        config.log_dir.glob(
+            "auth_[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_"
+            "[0-9][0-9]-[0-9][0-9]-[0-9][0-9].log"
+        )
+    )
 
     if not logs:
         logger.warning("No Linux auth logs found in %s", config.log_dir)
@@ -37,20 +53,39 @@ def find_latest_windows_log(config) -> Optional[Path]:
     """
     The most recently collected Windows log.
 
+    Two things matter here, both learned from a real directory rather
+    than guessed at. First, the glob matches only this pipeline's exact
+    naming convention (``windows_YYYY-MM-DD_HH-MM-SS.log``), not a bare
+    ``windows_*.log`` wildcard — a log directory that ever held output
+    from the old v1.0 push-based collector, which used a
+    ``windows_security_*.log`` prefix, would otherwise have those
+    unrelated leftover files considered at all. Second, "latest" is
+    decided by file modification time, not filename string order —
+    even with the precise glob, sorting by name alone is only correct
+    because this pipeline's own timestamp format happens to be
+    zero-padded; mtime doesn't depend on that holding.
+
     Only the newest file is analyzed, matching v1.0. Older Windows logs
     are never reprocessed once a newer one exists. This is a separate
     problem from the one this module's deduplication solves below —
     it's about collection pulling an overlapping *range* of events
     across runs (roadmap defect D10), fixed in pass 2e once the
-    collector itself becomes incremental, not about multiple files on
+    collector itself became incremental, not about multiple files on
     disk.
     """
 
-    logs = sorted(config.log_dir.glob("windows_*.log"))
+    logs = list(
+        config.log_dir.glob(
+            "windows_[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_"
+            "[0-9][0-9]-[0-9][0-9]-[0-9][0-9].log"
+        )
+    )
 
     if not logs:
         logger.info("No Windows security logs found in %s", config.log_dir)
         return None
+
+    logs.sort(key=lambda path: path.stat().st_mtime)
 
     if len(logs) > 1:
         logger.debug(
