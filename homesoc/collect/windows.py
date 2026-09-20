@@ -20,10 +20,25 @@ per-line shape ``homesoc.parse.windows`` already expects (built in pass
 
 The policy decisions — bootstrap vs. incremental, and detecting a
 cleared Security log — are deliberately plain Python functions with no
-WinRM call inside them (:func:`decide_watermark`, :func:`build_xpath`).
-Only the mechanical "run this script over this session" part touches
-the network, so the decisions themselves can be tested without a
-Windows box, pywinrm, or a mock of either.
+network call inside them (:func:`decide_watermark`, :func:`build_xpath`).
+Only the mechanical "run this script against this endpoint" part
+touches the network, so the decisions themselves can be tested without
+a Windows box or any WinRM library at all.
+
+Transport is ``pypsrp``, not ``pywinrm``. The first working version of
+this module used pywinrm, whose ``run_ps`` doesn't speak true
+PowerShell Remoting Protocol — it base64-encodes the script and
+captures output through the older WinRS raw-command-shell transport,
+which has to split large responses across multiple internal fragments
+and reassemble them itself. Against a real endpoint, a bootstrap pull
+of 500 events (roughly 500KB-1MB of XML) came back with most lines
+corrupted at fragment boundaries — not duplicated, actually malformed,
+confirmed by parsing every returned line and finding the overwhelming
+majority unparseable. pypsrp implements true PSRP, the protocol
+``Invoke-Command`` itself uses, with message-level framing built for
+exactly this kind of bulk structured output. Only the functions in the
+COLLECTION section below changed; everything above them is unaffected,
+since none of it ever imported pywinrm to begin with.
 """
 
 from __future__ import annotations
@@ -160,12 +175,15 @@ def parse_record_ids(output: str) -> List[int]:
     return [int(match) for match in _RECORD_ID.findall(output)]
 
 
-def _parse_single_int(raw: bytes) -> Optional[int]:
+def _parse_single_int(raw: Optional[str]) -> Optional[int]:
+
+    if not raw:
+        return None
 
     try:
-        return int(raw.decode("utf-8", errors="ignore").strip())
+        return int(raw.strip())
 
-    except (ValueError, AttributeError):
+    except ValueError:
         return None
 
 
@@ -185,7 +203,7 @@ def collect(config) -> Optional[Path]:
     or run the query (error), or a perfectly normal "nothing new since
     last time" (info). Giving the CLI's exit code its own opinion about
     which of those should count as a pipeline failure is Stage 8's job,
-    once pipeline health monitoring exists to act on it.
+    once pipeline health monitoring exists to act on the distinction.
     """
 
     host = config.windows_host
@@ -208,16 +226,18 @@ def collect(config) -> Optional[Path]:
         return None
 
     try:
-        import winrm
+        from pypsrp.client import Client
 
     except ImportError:
 
-        logger.error("pywinrm is not installed — run: pip install pywinrm")
+        logger.error("pypsrp is not installed — run: pip install pypsrp")
         return None
 
     port = config.get("collection.windows.winrm_port")
 
-    transport = config.get("collection.windows.transport")
+    use_ssl = config.get("collection.windows.use_ssl")
+
+    auth = config.get("collection.windows.auth")
 
     timeout = config.get("collection.windows.timeout_seconds")
 
@@ -225,43 +245,47 @@ def collect(config) -> Optional[Path]:
 
     max_events = config.get("collection.windows.max_events")
 
-    target = f"http://{host}:{port}/wsman"
-
     stored_watermark = store.read_watermark(config.windows_watermark_state, host)
 
     try:
-        session = winrm.Session(
-            target,
-            auth=(username, password),
-            transport=transport,
-            operation_timeout_sec=timeout,
-            read_timeout_sec=timeout + 10,
+        client = Client(
+            server=host,
+            username=username,
+            password=password,
+            ssl=use_ssl,
+            auth=auth,
+            port=port,
+            connection_timeout=timeout,
         )
 
-        head_result = session.run_ps(build_head_script())
+        head_output, head_streams, head_had_errors = client.execute_ps(
+            build_head_script()
+        )
 
     except Exception as error:
 
-        # pywinrm raises several distinct exception types depending on
-        # what went wrong (refused connection, TLS, timeout) — all of
-        # them mean "collection didn't happen", which is what matters
-        # here; there's no different recovery for one versus another.
+        # pypsrp raises different exception types depending on what
+        # went wrong (refused connection, TLS, timeout, authentication)
+        # — all of them mean "collection didn't happen", which is what
+        # matters here; there's no different recovery for one versus
+        # another.
 
         logger.error("Could not reach %s over WinRM: %s", host, error)
         return None
 
     head_id = None
 
-    if head_result.status_code == 0:
-        head_id = _parse_single_int(head_result.std_out)
+    if head_had_errors:
+
+        logger.warning(
+            "Could not determine %s's current log position — "
+            "proceeding without log-clear detection this run: %s",
+            host,
+            "; ".join(str(e) for e in head_streams.error) or "no detail",
+        )
 
     else:
-        logger.warning(
-            "Could not determine %s's current log position (exit %d) — "
-            "proceeding without log-clear detection this run",
-            host,
-            head_result.status_code,
-        )
+        head_id = _parse_single_int(head_output)
 
     effective_watermark = decide_watermark(stored_watermark, head_id)
 
@@ -292,25 +316,20 @@ def collect(config) -> Optional[Path]:
     )
 
     try:
-        result = session.run_ps(script)
+        output, streams, had_errors = client.execute_ps(script)
 
     except Exception as error:
 
-        logger.error("WinRM call to %s failed: %s", host, error)
+        logger.error("PSRP call to %s failed: %s", host, error)
         return None
 
-    if result.status_code != 0:
+    if had_errors:
 
-        stderr = result.std_err.decode("utf-8", errors="ignore").strip()
+        error_text = "; ".join(str(e) for e in streams.error) or "no detail"
 
-        logger.error(
-            "PowerShell exited %d on %s: %s",
-            result.status_code,
-            host,
-            stderr or "no error detail",
-        )
+        logger.error("PowerShell reported errors on %s: %s", host, error_text)
 
-        if "denied" in stderr.lower() or "unauthorized" in stderr.lower():
+        if "denied" in error_text.lower() or "unauthorized" in error_text.lower():
 
             logger.error(
                 "Check that %s is a member of 'Event Log Readers' and "
@@ -321,7 +340,7 @@ def collect(config) -> Optional[Path]:
 
         return None
 
-    output = result.std_out.decode("utf-8", errors="ignore").strip("\ufeff \r\n")
+    output = (output or "").strip("\ufeff \r\n")
 
     if not output:
         logger.info("No new Windows events since the last collection")
@@ -348,7 +367,7 @@ def collect(config) -> Optional[Path]:
     destination.write_text(output + "\n", encoding="utf-8")
 
     # Only advance the watermark once the file is safely on disk — a
-    # failure between the WinRM call and this write must not lose
+    # failure between the PSRP call and this write must not lose
     # events, the same principle homesoc.collect.linux follows for the
     # auth log copy.
 

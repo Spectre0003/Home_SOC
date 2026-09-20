@@ -72,7 +72,8 @@ DEFAULTS: dict = {
             # fallback for a lab where that's more convenient.
             "password": None,
             "winrm_port": 5985,
-            "transport": "ntlm",
+            "use_ssl": False,
+            "auth": "ntlm",
             "timeout_seconds": 30,
             "event_ids": [4624, 4625, 4672],
             "max_events": 500,
@@ -110,12 +111,15 @@ DEFAULTS: dict = {
 VALID_SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}
 VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
-# pywinrm's supported auth/transport names. "ntlm" is the practical
-# default for a workgroup lab with no domain — Kerberos needs one,
-# "basic" sends credentials with essentially no protection, and
-# "credssp" needs CredSSP enabled on the endpoint for no benefit here.
-VALID_WINRM_TRANSPORTS = {
-    "plaintext", "ssl", "kerberos", "ntlm", "credssp", "basic", "certificate",
+# pypsrp's supported auth mechanisms. "ntlm" is the practical default
+# for a workgroup lab with no domain — Kerberos needs one, "basic"
+# sends credentials with essentially no protection, and "credssp" needs
+# CredSSP enabled on the endpoint for no benefit here. Unlike pywinrm,
+# pypsrp treats encryption and authentication as separate settings —
+# there is no "plaintext"/"ssl" entry here because that's what
+# collection.windows.use_ssl controls instead.
+VALID_WINRM_AUTH = {
+    "negotiate", "kerberos", "ntlm", "credssp", "basic", "certificate",
 }
 
 
@@ -390,12 +394,20 @@ class Config:
                 f"(1-65535), got {winrm_port}"
             )
 
-        transport = self.get("collection.windows.transport")
+        auth = self.get("collection.windows.auth")
 
-        if transport not in VALID_WINRM_TRANSPORTS:
+        if auth not in VALID_WINRM_AUTH:
             raise ConfigError(
-                f"Unknown collection.windows.transport {transport!r}. "
-                f"Valid values: {', '.join(sorted(VALID_WINRM_TRANSPORTS))}"
+                f"Unknown collection.windows.auth {auth!r}. "
+                f"Valid values: {', '.join(sorted(VALID_WINRM_AUTH))}"
+            )
+
+        use_ssl = self.get("collection.windows.use_ssl")
+
+        if not isinstance(use_ssl, bool):
+            raise ConfigError(
+                f"collection.windows.use_ssl must be true or false, "
+                f"got {use_ssl!r}"
             )
 
         level = self.get("logging.level")

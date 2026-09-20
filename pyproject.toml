@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
     "PyYAML>=6.0",
-    "pywinrm>=0.4",
+    "pypsrp>=0.8",
 ]
 
 [project.scripts]
