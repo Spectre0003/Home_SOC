@@ -38,19 +38,40 @@ collection:
     collect_journal: true
 
   windows:
-    # Filled in at Stage 2, when collection becomes a SOC-initiated
-    # pull. Left here now so the config schema does not change shape.
+    # The SOC server pulls from this endpoint over WinRM (ADR 0002).
+    # Leave null to disable Windows collection entirely -- homesoc
+    # collect then only touches Linux logs, and nothing else in the
+    # pipeline complains about the absence.
     host: null
 
-    event_ids: [4624, 4625, 4672]
-    max_events: 500
+    # A dedicated, low-privilege account -- member of "Event Log
+    # Readers" and "Remote Management Users" on the endpoint, nothing
+    # more. See README.md "Windows Collection Setup".
+    username: null
 
-    # Prefer an IANA name over a fixed offset — an offset cannot
-    # follow daylight saving changes, and silently skews correlation
-    # by an hour when the endpoint's clock shifts and yours does not.
-    #   IANA:  Asia/Kolkata
-    #   Fixed: "+05:30"
-    timezone: Asia/Kolkata
+    # Never required here. HOMESOC_WINRM_PASSWORD is checked first and
+    # should be how this is actually set; this key exists purely as a
+    # documented fallback for a lab where that trade-off is acceptable.
+    password: null
+
+    winrm_port: 5985
+    use_ssl: false
+
+    # pypsrp auth mechanism. "ntlm" is the practical default for a
+    # workgroup lab with no domain -- kerberos needs one, "basic" sends
+    # credentials with essentially no protection, "credssp" needs
+    # CredSSP enabled on the endpoint for no benefit here.
+    auth: ntlm
+
+    timeout_seconds: 30
+
+    event_ids: [4624, 4625, 4672]
+
+    # Applied both as the bootstrap window (the most recent N events,
+    # on a first-ever collection) and as a per-call safety cap on every
+    # incremental pull afterward, so one collection can never try to
+    # drag in an unbounded backlog after a long gap.
+    max_events: 500
 
 
 # ---------------------------------------------
